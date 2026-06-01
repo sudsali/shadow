@@ -20,7 +20,7 @@ The 3-agent pipeline was developed for an internal Bedrock-based bot (`deequ-bot
 
 No fork needed unless you plan to modify Shadow. Install:
 
-1. **Add `.github/workflows/shadow.yml`** — copy [examples/caller-workflow.yml](examples/caller-workflow.yml) verbatim; the snippet below is a contract reminder, not a working file (it omits `on:` triggers and the workflow-level `permissions:` block both required for the workflow to fire and post comments):
+1. **Add `.github/workflows/shadow.yml`** — copy [examples/caller-workflow.yml](examples/caller-workflow.yml) verbatim; the snippet below is a contract reminder, not a working file (it omits `on:` triggers, the workflow-level `permissions:` block, and the `run-name:` template — all three are required: triggers to fire, permissions to post, run-name to make the rate-limit gate match issue events):
    ```yaml
    on:
      pull_request_target:
@@ -50,7 +50,7 @@ No fork needed unless you plan to modify Shadow. Install:
 
 ## AWS setup
 
-Shadow is BYO-AWS today: you bring an AWS account, the bot calls Bedrock from your account, you get the bill (~$2-3/PR avg, see [Cost](#cost)).
+Shadow is BYO-AWS today: you bring an AWS account, the bot calls Bedrock from your account, you get the bill (~$0.43/PR mean across the [9-PR bench corpus](bench/RESULTS.md), $2.38 on the head-to-head large-PR test; see [Cost](#cost)).
 
 ### Recommended: one-click CloudFormation Launch Stack
 
@@ -62,9 +62,11 @@ Click → AWS console opens with the [`shadow-iam-stack.yaml`](infrastructure/sh
 
 - **GitHubOrg** — your GitHub org or user
 - **GitHubRepo** — repo name. No default — pick one repo. Pass `*` only if you've audited every repo in the org.
+- **ShadowSourceRepo** — `sudsali/shadow` (default) or your fork's `owner/repo` if you maintain a hardened private copy. Embedded into the `job_workflow_ref` claim so a different Shadow source cannot assume this role.
 - **ShadowWorkflowRef** — `*` for quick start (any version of the workflow can assume this role), or a 40-char SHA to pin trust to one audited revision
 - **BedrockRegion** — `us-east-1`, `us-west-2`, or `us-east-2`
 - **ExistingOidcProviderArn** — leave blank if your account has no GitHub OIDC provider yet; the stack will create one. **If your account already uses GitHub Actions OIDC for any other workflow, you must paste your existing provider ARN here** (run `aws iam list-open-id-connect-providers` to find it). Leaving it blank when one already exists fails the stack with `EntityAlreadyExists`.
+- **MonthlyBudgetLimit** + **BudgetEmailAddress** *(optional)* — set both to enable an AWS Budget that emails when monthly Bedrock spend hits 80% / 100% of the configured cap. Leave at defaults (`0` / blank) to skip the alarm. See [Cost protection](#cost-protection).
 
 The stack creates the OIDC provider (only if `ExistingOidcProviderArn` is blank), an IAM role with the canonical trust policy, and a Bedrock-invoke permission scoped to Anthropic models only. The `ShadowRoleArn` output is what you paste into the `AWS_ROLE_ARN` repo secret.
 
@@ -102,7 +104,7 @@ If you'd rather not run the CloudFormation template:
      }]
    }
    ```
-   > **Replace** `ACCT` with your AWS account ID, `YOUR_ORG/YOUR_REPO` with your GitHub org/repo. The two `StringLike` claims combine with **AND** — `sub` limits which repo can assume the role, `job_workflow_ref` pins to Shadow's workflow file. For monorepo-style installs, use `repo:YOUR_ORG/*:*` only if you've audited every repo in the org.
+   > **Replace** `ACCT` with your AWS account ID, `YOUR_ORG/YOUR_REPO` with your GitHub org/repo. **If you forked Shadow**, replace `sudsali/shadow` in the `job_workflow_ref` claim with your fork's `owner/repo` to match the `uses:` line in your caller workflow — otherwise role assumption silently fails. (The CFN template handles this via the `ShadowSourceRepo` parameter.) The two `StringLike` claims combine with **AND**: `sub` limits which repo can assume the role, `job_workflow_ref` pins to Shadow's workflow file. For monorepo-style installs, use `repo:YOUR_ORG/*:*` only if you've audited every repo in the org.
    
    Permission policy (replace `us-east-1` with your Bedrock region; add multiple statements for multi-region):
    ```json
@@ -159,11 +161,13 @@ Shadow reads these from the workflow's `env:` block. The defaults are conservati
 | `BOT_MAX_FILES_FOR_REVIEW` | `50` | Pre-flight file-count cap. PR with > N files → ESCALATE before any Bedrock call. |
 | `BOT_PIPELINE_WALL_CLOCK_S` | `480` | Total agent-pipeline wall-clock budget (seconds) |
 | `BOT_REPORTER_MIN_REMAINING_S` | `60` | Wall-clock floor below which Reporter is pre-empted |
-| `BOT_AGENT_PIPELINE` | `1` (on) | Set `0`/`false`/`no`/`off` to fall back to legacy two-phase (requires `*_PROMPT` overrides). |
+| `BOT_AGENT_PIPELINE` | `1` (on) | Set `0`/`false`/`no`/`off` to disable PR review entirely. The legacy two-phase fallback was removed in round 18; with the agent pipeline disabled, PR events ESCALATE with reason `pipeline_disabled`. |
+| `BOT_MAX_REPLIES` | `2` | Per-(issue, PR) cap on bot follow-up replies before next user comment escalates instead. |
+| `BOT_GITHUB_ACTOR` | `github-actions[bot]` | GitHub login the bot's comments appear under. Override for custom GitHub Apps / service accounts so dedup helpers (`already_commented`, `_user_dissatisfied`) still match. |
 | `DRY_RUN` | `false` | When `true`, bot writes the artifact but doesn't post comments |
-| `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-7` | Override default model |
-| `BEDROCK_REPORTER_MODEL_ID` | (Haiku 4.5) | Override Reporter model |
-| `BEDROCK_CRITIC_MODEL_ID` | falls back to default | Override Critic model |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-7` | Override default Investigator model |
+| `BEDROCK_REPORTER_MODEL_ID` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Override Reporter model. Reporter default is Haiku because Bedrock's `outputConfig.textFormat` is Haiku-only over Converse today; Opus 4.7 rejects it. |
+| `BEDROCK_CRITIC_MODEL_ID` | falls back to `BEDROCK_MODEL_ID` | Override Critic model |
 | `GUARDRAIL_ID` / `GUARDRAIL_VERSION` | (unset) | Bedrock Guardrail ARN + version for the prompt-injection scanner |
 | `KB_S3_BUCKET` / `KB_S3_KEY` | (unset) | Optional S3-hosted knowledge-base context |
 | `SLACK_WEBHOOK_URL` | (unset) | Slack channel webhook for escalation notifications |
@@ -234,7 +238,7 @@ Every analyze run writes a `shadow_result.json` artifact (uploaded by the workfl
 
 ## Cost
 
-Average ~$2-3 per PR review with the v0 model split (Opus 4.7 Investigator + Critic, Haiku 4.5 Reporter, Opus cachePoint optimization). Worst case (large PR, max tool calls): ~$8.
+Mean **$0.43 per PR** across the published [9-PR bench corpus](bench/RESULTS.md) (range $0.29–$0.67) with the v0 model split (Opus 4.7 Investigator + Critic, Haiku 4.5 Reporter, Opus cachePoint optimization). On the deliberately-large head-to-head PR vs CodeRabbit ([bench/HEAD_TO_HEAD.md](bench/HEAD_TO_HEAD.md)) the cost was $2.38. Observed runs have stayed under $3 on the corpus; an upper-bound (large PR, max tool calls, full Opus budget) of roughly $5–8 is plausible but unmeasured.
 
 That's higher than single-call review bots ($0.05-$0.30 range). The cost buys verification: the Critic's job is to overturn false positives so you don't pay attention to noise. Most adopters' cost calculus is "is N false positives more expensive than $3?"
 
@@ -255,7 +259,7 @@ That's higher than single-call review bots ($0.05-$0.30 range). The cost buys ve
 
 The per-PR cost levers above bound a single review. These three guards bound fleet-wide spend, defending against PR/issue spam and runaway traffic:
 
-- **Per-PR rate limit** (`BOT_MAX_RUNS_PER_HOUR`, default `20`). Caps how many times a single PR/issue can trigger the workflow per rolling hour. Beyond the limit the bot escalates with the `shadow:rate-limited` label instead of running the agent pipeline. Defends against an adversary who closes/reopens or edits a PR title in a loop to bypass the per-item `already_commented` / `BOT_MAX_REPLIES` guards. Set to `0` to disable.
+- **Per-PR rate limit** (`BOT_MAX_RUNS_PER_HOUR`, default `20`). Caps how many times a single PR/issue can trigger the workflow per rolling hour. Beyond the limit the bot escalates with the `shadow:rate-limited` label instead of running the agent pipeline. Defends against an adversary who closes/reopens or edits a PR title in a loop to bypass the per-item `already_commented` / `BOT_MAX_REPLIES` guards. Set to `0` to disable. **Caller-workflow requirement for issues:** the rate-limit gate's match for `issues` / `issue_comment` events depends on the workflow run's name containing `#<number>`. The reusable workflow's own `run-name:` is ignored under `workflow_call`, so adopters must template `run-name: "Shadow #${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}"` in their caller workflow — see [`examples/caller-workflow.yml`](examples/caller-workflow.yml) for the canonical pattern. PR-only installs fall back to the GitHub API's `pull_requests` array and don't need this.
 - **Pre-flight diff size caps** (`BOT_MAX_DIFF_FOR_REVIEW_CHARS`, `BOT_MAX_FILES_FOR_REVIEW`, defaults `100000` / `50`). A 50-file PR makes Investigator read 5+ files, Critic re-reads, Reporter formats — costs multiply across stages. Diff or file count above the cap → ESCALATE before any Bedrock call. Pre-flight escalation is ~$0; a runaway pipeline on a giant PR is ~$5+.
 - **AWS Budgets opt-in via CFN** (`MonthlyBudgetLimit` parameter on `shadow-iam-stack.yaml`). Set to a positive USD amount + a `BudgetEmailAddress` and the stack creates an `AWS::Budgets::Budget` filtered to `Amazon Bedrock` spend, with email alerts at 80% and 100% of the limit. `0` skips Budget creation (default — AWS Budgets bills $0.02/budget/day, so opt-in only). Email-only today; auto-shutdown via `SHADOW_DISABLED` is a planned upgrade.
 

@@ -116,7 +116,7 @@ COMMENT: <one or two sentences: what is wrong, what should change>
 EVIDENCE: <specific lines and content from files you read; "(none reachable within budget)" if exhausted>
 TRIGGER: <concrete scenario for BUG/EDGE_CASE; empty otherwise>
 
-Place each `STATUS:` line at the start of its line with no indentation and exactly one space after the colon. Same for `SEVERITY:`, `CONFIDENCE:`, etc. The downstream parser is anchored MULTILINE.
+Place each `STATUS:` line at the start of its line with no indentation and exactly one space after the colon. Same for `SEVERITY:`, `CONFIDENCE:`, etc. The runtime parser tolerates `**STATUS:**` markdown bolding, but starts-of-line keep verdicts greppable by humans.
 
 If you find no concerns at all (not even disproved ones), emit exactly: No confirmed issues found.
 </output_format>

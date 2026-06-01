@@ -36,9 +36,6 @@
               },
               "evidence": {
                 "type": "string"
-              },
-              "trigger": {
-                "type": "string"
               }
             },
             "required": ["severity", "comment", "evidence"]

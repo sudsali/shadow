@@ -103,7 +103,9 @@ TOOL_SPECS = [
             "description": (
                 "Read a file (or a slice of it) from the repository at the PR head "
                 "SHA. Returns content with line numbers prefixed. Max 200 lines per "
-                "call — request a specific range for large files."
+                "call — request a specific range for large files. Files larger "
+                "than 5 MB are rejected; use grep_codebase to find lines and "
+                "request a narrower range."
             ),
             "inputSchema": {
                 "json": {
@@ -111,7 +113,7 @@ TOOL_SPECS = [
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Repo-relative path to the file (e.g., 'src/main/scala/com/amazon/deequ/X.scala').",
+                            "description": "Repo-relative path to the file (e.g., 'src/payments/charge.py').",
                         },
                         "start_line": {
                             "type": "integer",
@@ -165,7 +167,7 @@ TOOL_SPECS = [
                     "properties": {
                         "symbol": {
                             "type": "string",
-                            "description": "Symbol name (case-sensitive, no namespace prefix).",
+                            "description": "Symbol name (case-sensitive). Must be a single bare identifier matching `[A-Za-z_][A-Za-z0-9_]*` — no dots, colons, generics, hyphens, or namespace prefixes. Use grep_codebase for qualified names.",
                         },
                     },
                     "required": ["symbol"],
@@ -178,7 +180,9 @@ TOOL_SPECS = [
             "name": "find_tests_for",
             "description": (
                 "Find test files that exercise a given source file or symbol. "
-                "Returns paths to test files in src/test/."
+                "Returns paths to test files in the repository's configured "
+                "test directory (e.g. src/test/, tests/, or test/ depending "
+                "on the project's convention)."
             ),
             "inputSchema": {
                 "json": {
@@ -186,7 +190,7 @@ TOOL_SPECS = [
                     "properties": {
                         "target": {
                             "type": "string",
-                            "description": "Either a source path (e.g., 'src/main/scala/com/X.scala') or a symbol name.",
+                            "description": "Either a repo-relative source path (e.g., 'src/payments/charge.py') or a symbol name.",
                         },
                     },
                     "required": ["target"],

@@ -64,7 +64,7 @@ Emit one VERDICT line per finding the investigator marked CONFIRMED or UNVERIFIE
 VERDICT: <id> | UPHELD | <one-sentence rationale citing what you verified>
 VERDICT: <id> | OVERTURNED | <one-sentence rationale citing what you found>
 
-Place each `VERDICT:` line at the start of its line with no indentation and use literal `|` separators. The downstream parser is anchored MULTILINE.
+Place each `VERDICT:` line at the start of its line with no indentation and use literal `|` separators. The runtime parser tolerates `:` instead of `|` and `**VERDICT:**` markdown bolding, but the strict form keeps verdicts greppable for humans.
 
 If the investigator emitted "No confirmed issues found." or all findings are DISPROVED:
 ALL_DISPROVED: investigator found no confirmed concerns.
