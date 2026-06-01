@@ -15,7 +15,7 @@ on:
       pr_number:
         type: string
         required: false
-        description: "Override PR number for workflow_dispatch flows"
+        description: "Override PR or issue number for workflow_dispatch flows"
       dry_run:
         type: string
         default: "false"
@@ -49,10 +49,10 @@ on:
         required: false
         description: "Slack webhook URL for escalation notifications. Empty = Slack off."
 
-# Concurrency keyed on the caller's PR number so multiple PRs in the
-# adopter repo run in parallel but same-PR pushes serialize.
+# Concurrency keyed on the caller's PR or issue number so different items
+# run in parallel but same-item events serialize.
 concurrency:
-  group: shadow-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  group: shadow-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -109,7 +109,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
           EVENT_TYPE: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           EVENT_BEFORE: ${{ github.event.before }}
@@ -185,7 +185,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
           EVENT_TYPE: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           DRY_RUN: ${{ inputs.dry_run }}

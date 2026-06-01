@@ -31,7 +31,6 @@ from .tools import TOOL_SPECS, ToolRunner
 logger = logging.getLogger("shadow")
 
 ARTIFACT_PATH = os.getenv("ARTIFACT_PATH", "/tmp/bot_result.json")
-_MAX_BOT_REPLIES = 2
 
 # Events surfaced by _run_critic_and_reporter. Critic-stage events tag
 # metrics["critic"]; escalate events drive pipeline-level ESCALATE.
@@ -159,7 +158,7 @@ def analyze():
         if _already_replied_to_latest(comments_data):
             _write_artifact({"action": "SKIP", "reason": "already_replied_to_comment"})
             return
-        if _bot_reply_count(comments_data) >= _MAX_BOT_REPLIES:
+        if _bot_reply_count(comments_data) >= cfg.max_bot_replies:
             _write_artifact({
                 "action": "ESCALATE", "labels": [], "response": "",
                 "reason": "max_replies_reached", "title": title,
@@ -374,7 +373,10 @@ def analyze():
         prompt_id = prompts.prompt_version(tmpl)
 
     schema = FOLLOWUP_SCHEMA if is_followup else ISSUE_RESPONSE_SCHEMA
-    raw = bedrock.invoke(system_prompt, user_prompt, json_schema=schema, cache_prefix=True)
+    # Issue path uses Haiku (cfg.reporter_model_id): Opus 4.7 doesn't accept
+    # outputConfig.textFormat (structured output) over Bedrock today; Haiku does.
+    raw = bedrock.invoke(system_prompt, user_prompt, json_schema=schema,
+                         cache_prefix=True, model_id=cfg.reporter_model_id)
 
     if raw is None:
         _write_artifact({
@@ -398,7 +400,8 @@ def analyze():
                 )
                 respond_user = f"<issue>\nTitle: {title}\nBody: {body}\n</issue>\n<conversation>\n{comments_text}\n</conversation>"
                 raw2 = bedrock.invoke(respond_system, respond_user,
-                                      json_schema=ISSUE_RESPONSE_SCHEMA)
+                                      json_schema=ISSUE_RESPONSE_SCHEMA,
+                                      model_id=cfg.reporter_model_id)
                 if raw2:
                     parsed2 = _parse_response(raw2, is_pr)
                     parsed2["labels"] = parsed2.get("labels") or parsed.get("labels", [])

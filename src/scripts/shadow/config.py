@@ -99,6 +99,14 @@ class Config:
             shadow_config.get(yml, "bot", "escalate_label"),
             "needs-human",
         ), "needs-human")
+        # After this many bot replies on one issue/PR, the next user comment
+        # escalates instead of triggering another reply. Anti-abuse + cost
+        # control. Default 2 matches the original deequ-bot tuning.
+        self.max_bot_replies = _max_replies_or_default(shadow_config.env_or(
+            "BOT_MAX_REPLIES",
+            shadow_config.get(yml, "bot", "max_replies"),
+            2,
+        ), 2)
 
         self.bedrock_timeout = 240
         self.max_context_chars = 800000
@@ -174,6 +182,27 @@ def _scrub_label(val, default):
     if not val:
         return default
     return val[:50]
+
+
+def _max_replies_or_default(val, default):
+    """yaml int, env str, or wrong type → default. Bound to [0, 100] so a
+    yaml typo can't disable the cap entirely or set it absurdly high.
+    `0` is valid and means "escalate on first follow-up; no bot replies"."""
+    if isinstance(val, bool):
+        return default
+    if isinstance(val, int):
+        n = val
+    elif isinstance(val, str):
+        s = val.strip().lstrip("+-")
+        if s.isdigit():
+            n = int(val.strip())
+        else:
+            return default
+    else:
+        return default
+    if n < 0 or n > 100:
+        return default
+    return n
 
 
 def _scrub_model_id(val, default):

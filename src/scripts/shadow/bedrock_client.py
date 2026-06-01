@@ -92,7 +92,8 @@ class BedrockClient:
         return bool(self._guardrail_id)
 
     def invoke(self, system_prompt, user_prompt, max_tokens=4096,
-               temperature=0.3, json_schema=None, cache_prefix=False):
+               temperature=0.3, json_schema=None, cache_prefix=False,
+               model_id=None):
         """Invoke Bedrock Converse API with guardrail on user message only.
 
         - system_prompt: Instructions + trusted context (KB, diffs, codebase).
@@ -107,9 +108,13 @@ class BedrockClient:
             per-PR diff bytes in system_prompt — caching there pays the 1.25x
             write premium with zero reuse. Issue/followup callers pass True
             since their prefix is KB + codebase_map, stable across calls.
+        - model_id: override the default model for this call. Issue triage
+            uses Haiku because Opus 4.7 doesn't accept outputConfig.textFormat
+            (structured output) over Bedrock today; Haiku does.
         """
-        if not self.is_model_available(self._model_id):
-            logger.warning("Circuit breaker open for %s, skipping", self._model_id)
+        target_model = model_id or self._model_id
+        if not self.is_model_available(target_model):
+            logger.warning("Circuit breaker open for %s, skipping", target_model)
             return None
         try:
             if self._guardrail_id:
@@ -118,9 +123,9 @@ class BedrockClient:
                 user_content = [{"text": user_prompt}]
 
             kwargs = {
-                "modelId": self._model_id,
+                "modelId": target_model,
                 "messages": [{"role": "user", "content": user_content}],
-                "inferenceConfig": _build_inference_config(max_tokens, temperature, self._model_id),
+                "inferenceConfig": _build_inference_config(max_tokens, temperature, target_model),
             }
 
             if system_prompt:
@@ -157,14 +162,14 @@ class BedrockClient:
             if not output:
                 raise ValueError("Empty Bedrock response")
 
-            self._record_success(self._model_id)
+            self._record_success(target_model)
             usage = resp.get("usage", {})
             logger.info("Bedrock: input=%s, output=%s, cacheRead=%s, cacheWrite=%s",
                         usage.get("inputTokens"), usage.get("outputTokens"),
                         usage.get("cacheReadInputTokens"), usage.get("cacheWriteInputTokens"))
             return (output[0].get("text") or "").strip()
         except (ClientError, BotoCoreError, ValueError, KeyError, ConnectionError) as e:
-            self._record_failure(self._model_id, e)
+            self._record_failure(target_model, e)
             return None
 
     def invoke_with_usage(self, system_prompt, user_prompt, max_tokens=4096,

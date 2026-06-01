@@ -65,21 +65,22 @@ def get_pr_critic_commit_prompt():
     return _get_prompt("PR_CRITIC_COMMIT_PROMPT", "pr-critic-commit.txt")
 
 
-# Legacy stubs return "" so callers from main.py don't crash; they already check empty and bail.
 def get_issue_prompt():
-    return os.getenv("ISSUE_CLASSIFY_PROMPT", "")
+    return _get_prompt("ISSUE_CLASSIFY_PROMPT", "issue-classify.txt")
 
 
 def get_issue_respond_prompt():
-    return os.getenv("ISSUE_RESPOND_PROMPT", "")
-
-
-def get_pr_file_review_prompt():
-    return os.getenv("PR_FILE_REVIEW_PROMPT", "")
+    return _get_prompt("ISSUE_RESPOND_PROMPT", "issue-respond.txt")
 
 
 def get_followup_prompt():
-    return os.getenv("FOLLOWUP_PROMPT", "")
+    return _get_prompt("FOLLOWUP_PROMPT", "followup.txt")
+
+
+# Legacy two-phase PR-review prompts — env-only stubs. The agent pipeline
+# (BOT_AGENT_PIPELINE=1, default) doesn't read these.
+def get_pr_file_review_prompt():
+    return os.getenv("PR_FILE_REVIEW_PROMPT", "")
 
 
 def get_pr_file_review_report_prompt():

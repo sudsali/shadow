@@ -180,6 +180,63 @@ def test_yaml_oversized_label_truncated(monkeypatch):
         assert len(cfg.escalate_label) == 50
 
 
+def test_max_bot_replies_default(monkeypatch):
+    _set_required_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        cfg = Config()
+        assert cfg.max_bot_replies == 2
+
+
+def test_max_bot_replies_yaml_override(monkeypatch):
+    _set_required_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".shadow.yml").write_text("bot:\n  max_replies: 5\n")
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        assert Config().max_bot_replies == 5
+
+
+def test_max_bot_replies_env_beats_yaml(monkeypatch):
+    _set_required_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".shadow.yml").write_text("bot:\n  max_replies: 5\n")
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BOT_MAX_REPLIES", "1")
+        from shadow.config import Config
+        assert Config().max_bot_replies == 1
+
+
+def test_max_bot_replies_yaml_zero_is_valid(monkeypatch):
+    """0 means 'escalate on first follow-up, no bot replies'. Must pass through
+    so a tightening of the validator (e.g., `n <= 0`) doesn't silently regress
+    that semantic."""
+    _set_required_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".shadow.yml").write_text("bot:\n  max_replies: 0\n")
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        assert Config().max_bot_replies == 0
+
+
+def test_max_bot_replies_garbage_yaml_falls_back(monkeypatch):
+    """A yaml typo (string, list, bool, negative, absurdly high) must not
+    silently disable the cap or set it to a value an attacker could exploit."""
+    _set_required_env(monkeypatch)
+    for garbage in ("not-a-number", "-1", "9999", "true"):
+        # Re-isolate env per iteration so future-added env-mutating asserts in
+        # this loop don't leak across.
+        monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, ".shadow.yml").write_text(
+                f"bot:\n  max_replies: {garbage}\n"
+            )
+            monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+            from shadow.config import Config
+            assert Config().max_bot_replies == 2, f"failed for: {garbage!r}"
+
+
 @pytest.fixture(autouse=True)
 def _reload_config():
     """Config reads env at import-time; force fresh load per test."""

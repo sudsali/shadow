@@ -7,11 +7,15 @@ name: Shadow
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
+  # Issue review (optional). Triggers on issue creation/reopen only — comment
+  # events on issues are not handled by Shadow today.
+  issues:
+    types: [opened, reopened]
   workflow_dispatch:
     inputs:
       pr_number:
         required: true
-        description: "PR number to review"
+        description: "PR or issue number to review"
       dry_run:
         type: boolean
         default: true
