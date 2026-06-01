@@ -83,3 +83,58 @@ def test_list_arg_values_walked():
     out = _sanitize_trace(trace)
     assert out[0]["args"]["patterns"][0] == "clean"
     assert out[0]["args"]["patterns"][1] == "[redacted]"
+
+
+def test_deeply_nested_dict_capped():
+    """A pathologically deep args dict (future tool with nested config) must
+    not RecursionError. Depth cap at 50 truncates with a sentinel; nothing
+    crashes."""
+    nested = "leaf"
+    for _ in range(100):
+        nested = {"k": nested}
+    out = _sanitize_trace([{"tool": "x", "args": nested}])
+    # No RecursionError raised; sentinel landed somewhere in the structure.
+    assert "[depth-cap exceeded]" in str(out[0])
+
+
+def test_deeply_nested_list_capped():
+    """Mirror test for lists; same cap mechanism."""
+    nested = "leaf"
+    for _ in range(100):
+        nested = [nested]
+    out = _sanitize_trace([{"tool": "x", "args": {"chain": nested}}])
+    assert "[depth-cap exceeded]" in str(out[0])
+
+
+def test_self_referencing_dict_detected():
+    """A dict that references itself (`d["self"] = d`) is theoretically
+    possible if a tool-handler builds its own args dict mutably. Don't
+    crash; mark the cycle and move on."""
+    d = {"a": 1}
+    d["self"] = d
+    # Must not raise; either the cycle marker landed somewhere or the
+    # function returned without crashing.
+    out = _sanitize_trace([{"tool": "x", "args": d}])
+    assert out is not None
+    # Cycle should be detected somewhere in the structure.
+    assert "[cycle]" in str(out[0])
+
+
+def test_self_referencing_list_detected():
+    lst = [1, 2]
+    lst.append(lst)
+    out = _sanitize_trace([{"tool": "x", "args": {"items": lst}}])
+    assert out is not None
+    assert "[cycle]" in str(out[0])
+
+
+def test_shallow_structure_unaffected_by_cap():
+    """Sanity: a normal-depth args dict (≤50 levels) passes through clean.
+    Lock the cap at the documented threshold so a refactor lowering it
+    (e.g., to 10) doesn't silently truncate routine traces."""
+    trace = [{
+        "tool": "x",
+        "args": {"a": {"b": {"c": "leaf"}}},
+    }]
+    out = _sanitize_trace(trace)
+    assert out[0]["args"]["a"]["b"]["c"] == "leaf"

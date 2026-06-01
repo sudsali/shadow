@@ -118,9 +118,19 @@ def test_compute_cost_usd_aggregates_three_stages():
     )
 
 
-def test_pricing_table_covers_default_models():
-    """If the bot ships with new defaults, the pricing table must keep up."""
-    assert "us.anthropic.claude-opus-4-7" in _MODEL_PRICING_PER_M_TOKENS
+def test_pricing_table_covers_default_model():
+    """If the bot ships with a new default model, the pricing table must
+    keep up. Pull the actual default from `shadow.config` rather than
+    hardcoding the literal — otherwise this test devolves into asserting
+    the dict's own key, which is tautological."""
+    from shadow.config import _DEFAULT_MODEL
+    assert _DEFAULT_MODEL in _MODEL_PRICING_PER_M_TOKENS
+
+
+def test_pricing_table_covers_haiku_reporter():
+    """Reporter typically runs on Haiku for cost; keep that key alive in
+    the pricing table so cost rollups don't silently fall back to Opus
+    pricing for Haiku-routed tokens."""
     assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in _MODEL_PRICING_PER_M_TOKENS
 
 

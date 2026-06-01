@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import logging
 
@@ -6,6 +7,15 @@ from . import shadow_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("shadow")
+
+
+# Built-in default model. Module-level so the cost-pricing test can assert
+# the pricing table covers it without re-encoding the literal in two places.
+_DEFAULT_MODEL = "us.anthropic.claude-opus-4-7"
+# Reporter built-in default. Haiku because the Reporter is JSON-formatting
+# only — Opus's reasoning depth is wasted there, and Haiku is the model
+# documented as the default in the README.
+_DEFAULT_REPORTER_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 class Config:
@@ -24,20 +34,30 @@ class Config:
         self.event_before = os.getenv("EVENT_BEFORE", "")
         self.event_after = os.getenv("EVENT_AFTER", "")
 
-        _default_model = "us.anthropic.claude-opus-4-7"
         self.bedrock_model_id = _scrub_model_id(shadow_config.env_or(
             "BEDROCK_MODEL_ID",
             shadow_config.get(yml, "models", "investigator"),
-            _default_model,
-        ), _default_model)
-        # Reporter is JSON-formatting only; a cheaper model handles structured output well enough.
+            _DEFAULT_MODEL,
+        ), _DEFAULT_MODEL)
+        # Reporter is JSON-formatting only; Haiku handles structured output
+        # well enough AND is the model the issue path REQUIRES (Opus 4.7
+        # rejects outputConfig.textFormat over Bedrock today). Adopters who
+        # override BEDROCK_MODEL_ID (Investigator) without setting Reporter
+        # silently get Haiku here — log loud at INFO so the asymmetry is
+        # visible in workflow logs rather than discovered via "why does my
+        # Reporter look weaker than my Investigator".
         self.reporter_model_id = _scrub_model_id(shadow_config.env_or(
             "BEDROCK_REPORTER_MODEL_ID",
             shadow_config.get(yml, "models", "reporter"),
-            self.bedrock_model_id,
-        ), self.bedrock_model_id)
+            _DEFAULT_REPORTER_MODEL,
+        ), _DEFAULT_REPORTER_MODEL)
         if self.reporter_model_id != self.bedrock_model_id:
-            logger.info("Reporter model override: %s (default: %s)", self.reporter_model_id, self.bedrock_model_id)
+            logger.info(
+                "Reporter model: %s (Investigator: %s). Reporter default is "
+                "Haiku for structured-output compatibility; set "
+                "BEDROCK_REPORTER_MODEL_ID to override.",
+                self.reporter_model_id, self.bedrock_model_id,
+            )
         # Critic runs converse_with_tools — override must support tool use.
         self.critic_model_id = _scrub_model_id(shadow_config.env_or(
             "BEDROCK_CRITIC_MODEL_ID",
@@ -99,14 +119,38 @@ class Config:
             shadow_config.get(yml, "bot", "escalate_label"),
             "needs-human",
         ), "needs-human")
+        # GitHub login the bot's comments appear under. Default matches the
+        # GHA built-in token; adopters running under a custom GitHub App or
+        # service account override via BOT_GITHUB_ACTOR env or yaml.
+        self.bot_actor = _scrub_label(shadow_config.env_or(
+            "BOT_GITHUB_ACTOR",
+            shadow_config.get(yml, "bot", "github_actor"),
+            "github-actions[bot]",
+        ), "github-actions[bot]")
         # After this many bot replies on one issue/PR, the next user comment
         # escalates instead of triggering another reply. Anti-abuse + cost
         # control. Default 2 matches the original deequ-bot tuning.
-        self.max_bot_replies = _max_replies_or_default(shadow_config.env_or(
+        self.max_bot_replies = _int_in_range_or_default(shadow_config.env_or(
             "BOT_MAX_REPLIES",
             shadow_config.get(yml, "bot", "max_replies"),
             2,
         ), 2)
+        # Per-(repo, item) hourly rate limit on Shadow workflow runs. Defends
+        # against PR/issue spam triggering a fleet of expensive Bedrock calls
+        # past the per-item already_commented / max_bot_replies guards. 0
+        # disables the limit so adopters who handle this externally aren't
+        # double-gated.
+        self.max_runs_per_hour = _int_in_range_or_default(shadow_config.env_or(
+            "BOT_MAX_RUNS_PER_HOUR",
+            shadow_config.get(yml, "bot", "max_runs_per_hour"),
+            20,
+        ), 20)
+        # Pre-flight diff/file-count caps. A 50-file PR ripples through
+        # Investigator → Critic → Reporter, each potentially reading 5+
+        # files; cost amplification is multiplicative. Escalating before
+        # any Bedrock call burns ~$0; a runaway pipeline burns ~$5+.
+        self.max_diff_for_review = _int_env("BOT_MAX_DIFF_FOR_REVIEW_CHARS", 100_000)
+        self.max_files_for_review = _int_env("BOT_MAX_FILES_FOR_REVIEW", 50)
 
         self.bedrock_timeout = 240
         self.max_context_chars = 800000
@@ -184,19 +228,22 @@ def _scrub_label(val, default):
     return val[:50]
 
 
-def _max_replies_or_default(val, default):
+def _int_in_range_or_default(val, default):
     """yaml int, env str, or wrong type → default. Bound to [0, 100] so a
     yaml typo can't disable the cap entirely or set it absurdly high.
-    `0` is valid and means "escalate on first follow-up; no bot replies"."""
+    `0` is valid and means "no limit applied" (callers decide per-field
+    semantics — e.g., max_bot_replies=0 means escalate-on-first-followup,
+    max_runs_per_hour=0 means disable the rate limit). Garbage strings
+    (`"--5"`, `"++5"`, `"5  abc"`, signed beyond the bound) fall back to
+    default rather than crash Config()."""
     if isinstance(val, bool):
         return default
     if isinstance(val, int):
         n = val
     elif isinstance(val, str):
-        s = val.strip().lstrip("+-")
-        if s.isdigit():
+        try:
             n = int(val.strip())
-        else:
+        except (TypeError, ValueError):
             return default
     else:
         return default
@@ -221,8 +268,14 @@ def _scrub_model_id(val, default):
 
 
 def _scrub_marker_token(val, default):
-    """Embedded in `<!-- {bot}:clean -->`; reject HTML-comment-breaking chars."""
+    """Embedded in `<!-- {bot}:clean -->`; reject HTML-comment-breaking chars.
+    Collapses runs of `-`/`_` to a single char so adjacent dashes can't break
+    out of the `<!-- ... -->` envelope (HTML forbids `--` inside a comment
+    body — `<!-- shadow--evil:clean -->` would close the comment early)."""
     if not isinstance(val, str):
         return default
-    val = "".join(c for c in val if c.isalnum() or c in "-_").strip("-_")
+    val = "".join(c for c in val if c.isalnum() or c in "-_")
+    val = re.sub(r"-{2,}", "-", val)
+    val = re.sub(r"_{2,}", "_", val)
+    val = val.strip("-_")
     return val[:32] if val else default

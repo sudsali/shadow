@@ -75,14 +75,17 @@ def test_filter_appends_trail_to_comment_body():
 
 
 def test_filter_drops_aux_fields_after_merge():
-    """hypothesis/falsification_attempt land in the merged comment body, then
-    get popped from the dict — so the artifact (7d retention) doesn't carry
-    a parallel unsanitized copy."""
+    """hypothesis/falsification_attempt/evidence land in the merged comment
+    body, then get popped from the dict — so the artifact (7d retention)
+    doesn't carry a parallel unsanitized copy. Include `evidence` in the
+    input so the assertion that it's absent is a real pop, not vacuous
+    (absent-because-never-present)."""
     comments = [{
         "file": "src/foo.py",
         "line": 10,
         "severity": "BUG",
         "comment": "x",
+        "evidence": "ev",
         "hypothesis": "h",
         "falsification_attempt": "f",
     }]
@@ -170,3 +173,48 @@ def test_filter_drops_finding_when_comment_carries_injection_marker():
         comments, incremental_files=set(), is_pr_update=False,
     )
     assert kept == []
+
+
+# Case- and whitespace-tolerant `</details>` scrub. GitHub renders HTML
+# case-insensitively and accepts internal whitespace inside close-tags, so
+# `</DETAILS>`, `</Details>`, `</ details >`, `</details\n>` all close the
+# wrapping <details> block. A literal `.replace("</details>", ...)` would
+# leave those variants intact and let attacker text escape the block.
+
+def test_trail_escapes_uppercase_close_tag():
+    out = _format_refutation_trail("evil </DETAILS> oops", "ok")
+    assert "</DETAILS>" not in out
+    assert "&lt;/details&gt;" in out
+    # Closing tag we wrote must still be present at the end.
+    assert out.rstrip().endswith("</details>")
+
+
+def test_trail_escapes_titlecase_close_tag():
+    out = _format_refutation_trail("evil </Details> oops", "ok")
+    assert "</Details>" not in out
+    assert "&lt;/details&gt;" in out
+
+
+def test_trail_escapes_close_tag_with_internal_spaces():
+    out = _format_refutation_trail("evil </ details > oops", "ok")
+    assert "</ details >" not in out
+    assert "&lt;/details&gt;" in out
+
+
+def test_trail_escapes_close_tag_with_internal_newline():
+    out = _format_refutation_trail("evil </details\n> oops", "ok")
+    assert "</details\n>" not in out
+    assert "&lt;/details&gt;" in out
+
+
+def test_trail_escapes_close_tag_in_falsification_uppercase():
+    out = _format_refutation_trail("h", "see </DETAILS> below")
+    assert "</DETAILS>" not in out
+    assert "&lt;/details&gt;" in out
+
+
+def test_trail_escapes_close_tag_with_tab_inside():
+    # Whitespace inside the close-tag covers \t, not just spaces.
+    out = _format_refutation_trail("evil </\tdetails\t> oops", "ok")
+    assert "</\tdetails\t>" not in out
+    assert "&lt;/details&gt;" in out

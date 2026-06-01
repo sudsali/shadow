@@ -8,9 +8,11 @@ text so the model can self-correct and continue investigating.
 Path safety: every tool that accepts a path normalizes via realpath and
 rejects anything outside the repo root.
 """
+import itertools
 import logging
 import os
 import re
+import time
 
 logger = logging.getLogger("shadow")
 
@@ -23,6 +25,30 @@ _MAX_FILES_FOR_CALLERS = 20
 _MAX_FILES_LINE_SNIPPETS = 10
 _MAX_LINES_PER_FILE = 5
 _MAX_SNIPPET_CHARS = 200
+
+# read_file cap. Loading files larger than this into memory risks an OOM
+# kill on the GHA runner; the model can grep_codebase to find specific
+# lines or request narrow ranges instead.
+_MAX_READ_FILE_BYTES = 5 * 1024 * 1024  # 5MB
+
+# How often (in files visited) walk-based tools re-check the wall-clock
+# deadline. Per-iteration check would dominate for small repos; once per
+# 100 files keeps the overhead unmeasurable on big trees.
+_DEADLINE_CHECK_INTERVAL = 100
+
+
+def _deadline_exceeded(deadline):
+    """True iff a deadline (monotonic seconds) has been provided AND passed."""
+    return deadline is not None and time.monotonic() > deadline
+
+
+def _deadline_error(tool_name):
+    """Standard deadline-exceeded error returned to the model. Same wording
+    in every tool so a future agent-loop change can grep for it."""
+    return (
+        f"ERROR: tool '{tool_name}' execution exceeded remaining wall-clock budget; "
+        "concluding investigation with partial results"
+    )
 
 # Default per-tool call budgets, co-located with TOOL_SPECS so a tool rename
 # requires updating both in one place. Tools omitted from this dict have no
@@ -237,7 +263,7 @@ def _infer_test_dir(repo_root, src_dir, configured_test_dir=""):
 _REDOS_PATTERN = re.compile(r"\([^)]*[+*][^)]*\)[+*]")
 
 
-def grep_codebase(pattern, path_glob, repo_root, src_dir, default_ext):
+def grep_codebase(pattern, path_glob, repo_root, src_dir, default_ext, deadline=None):
     """Search for a regex across the codebase. Returns 'path:line:text' lines.
 
     See _resolve_grep_scope for the path_glob shapes accepted.
@@ -245,6 +271,10 @@ def grep_codebase(pattern, path_glob, repo_root, src_dir, default_ext):
     Pattern is model-supplied; nested-quantifier shapes like (a+)+ are
     rejected up-front to keep one bad call from burning the wall-clock
     budget for the whole pipeline.
+
+    `deadline` (optional): monotonic-seconds at which to abort. Walk-based
+    tools check this every _DEADLINE_CHECK_INTERVAL files; on timeout,
+    return a structured error rather than blocking on a giant repo.
     """
     if not pattern or not isinstance(pattern, str):
         return "ERROR: pattern must be a non-empty string"
@@ -263,13 +293,22 @@ def grep_codebase(pattern, path_glob, repo_root, src_dir, default_ext):
     if err:
         return err
 
+    deadline_hit = [False]
     if single_file:
         matches = list(_iter_matches_in_file(regex, single_file, repo_root, _MAX_GREP_RESULTS))
     else:
-        matches = list(_iter_matches(regex, search_root, repo_root, ext, _MAX_GREP_RESULTS))
+        matches = list(_iter_matches(
+            regex, search_root, repo_root, ext, _MAX_GREP_RESULTS,
+            deadline=deadline, deadline_hit=deadline_hit,
+        ))
+    if deadline_hit[0] and not matches:
+        return _deadline_error("grep_codebase")
     if not matches:
         return f"No matches for pattern '{pattern}' in {scope_label}"
-    header = f"Found {len(matches)} match(es) (capped at {_MAX_GREP_RESULTS}) in {scope_label}:\n"
+    header = f"Found {len(matches)} match(es) (capped at {_MAX_GREP_RESULTS}) in {scope_label}"
+    if deadline_hit[0]:
+        header += " (deadline-truncated)"
+    header += ":\n"
     return _truncate(header + "\n".join(matches))
 
 
@@ -339,13 +378,19 @@ def _is_inside(real_root, candidate_full_path):
     return real_candidate == real_root or real_candidate.startswith(real_root + os.sep)
 
 
-def _iter_matches(regex, search_root, repo_root, ext, limit):
+def _iter_matches(regex, search_root, repo_root, ext, limit,
+                  deadline=None, deadline_hit=None):
     """Yield up to `limit` regex matches as 'path:line:text' strings.
     Symlinks pointing outside repo_root are skipped; in-repo symlinks
-    are deduped by realpath so each physical file is grepped once."""
+    are deduped by realpath so each physical file is grepped once.
+
+    deadline / deadline_hit: optional monotonic-seconds budget; on timeout
+    the iterator stops and `deadline_hit[0]` is set to True so the caller
+    can distinguish "no matches" from "ran out of time scanning"."""
     real_root = os.path.realpath(repo_root)
     seen = set()
     count = 0
+    files_visited = 0
     for dirpath, _, files in os.walk(search_root):
         for fn in files:
             if not fn.endswith(ext):
@@ -357,6 +402,15 @@ def _iter_matches(regex, search_root, repo_root, ext, limit):
             if real_full in seen:
                 continue
             seen.add(real_full)
+            files_visited += 1
+            if (
+                deadline is not None
+                and files_visited % _DEADLINE_CHECK_INTERVAL == 0
+                and _deadline_exceeded(deadline)
+            ):
+                if deadline_hit is not None:
+                    deadline_hit[0] = True
+                return
             try:
                 with open(full, encoding="utf-8", errors="ignore") as f:
                     rel = os.path.relpath(full, real_root)
@@ -399,6 +453,10 @@ def read_file(path, start_line, end_line, repo_root):
       -1: read to end of file (still capped at MAX_FILE_LINES_PER_CALL)
       any other negative or non-int: same as None (use default range)
       positive int: read up to that line (capped at total)
+
+    Files larger than _MAX_READ_FILE_BYTES are rejected up-front to avoid
+    OOM-killing the runner; loading 100MB into Python list-of-lines costs
+    >1GB of RSS. Model is told to use grep_codebase or narrow ranges.
     """
     abs_path, err = _safe_repo_path(repo_root, path)
     if err:
@@ -406,26 +464,55 @@ def read_file(path, start_line, end_line, repo_root):
     if not os.path.isfile(abs_path):
         return f"ERROR: file '{path}' not found"
     try:
-        with open(abs_path, encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+        size = os.path.getsize(abs_path)
     except OSError as e:
-        return f"ERROR: cannot read '{path}': {e}"
-    total = len(lines)
-    start = start_line if isinstance(start_line, int) and start_line >= 1 else 1
-    if isinstance(end_line, int) and end_line == -1:
-        end = total
-    elif isinstance(end_line, int) and end_line >= 1:
-        end = min(end_line, total)
+        return f"ERROR: cannot stat '{path}': {type(e).__name__}"
+    if size > _MAX_READ_FILE_BYTES:
+        return (
+            f"ERROR: file '{path}' is {size} bytes, exceeds {_MAX_READ_FILE_BYTES}-byte cap; "
+            "use grep_codebase to find relevant lines or request a narrower range"
+        )
+    # `bool` is an int subclass; True would slip through `isinstance(_, int)`
+    # and end up requesting line 1. Reject explicitly so a model emitting
+    # `start_line: true` falls back to the default line range.
+    def _is_real_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+    start = start_line if _is_real_int(start_line) and start_line >= 1 else 1
+    # end_line is sentinel-typed (-1 = end of file). Translate to a
+    # request count we can clamp before the read.
+    if _is_real_int(end_line) and end_line == -1:
+        end_request = None  # read until EOF (capped at MAX below)
+    elif _is_real_int(end_line) and end_line >= 1:
+        end_request = end_line
     else:
-        end = min(start + _MAX_FILE_LINES_PER_CALL - 1, total)
+        end_request = start + _MAX_FILE_LINES_PER_CALL - 1
+    # Stream-slice with islice so we don't materialize lines below
+    # start_line. Two-pass approach: first count total lines (cheap), then
+    # read the slice. itertools.islice avoids the f.readlines() blow-up
+    # the 5MB cap above already prevents but the slicing keeps memory
+    # proportional to the requested range, not the file size.
+    try:
+        with open(abs_path, encoding="utf-8", errors="ignore") as f:
+            total = sum(1 for _ in f)
+    except OSError as e:
+        return f"ERROR: cannot read '{path}': {type(e).__name__}"
     if start > total:
         return f"ERROR: start_line {start} exceeds file length {total}"
+    if end_request is None:
+        end = total
+    else:
+        end = min(end_request, total)
     if end - start + 1 > _MAX_FILE_LINES_PER_CALL:
         end = start + _MAX_FILE_LINES_PER_CALL - 1
+    try:
+        with open(abs_path, encoding="utf-8", errors="ignore") as f:
+            sliced = list(itertools.islice(f, start - 1, end))
+    except OSError as e:
+        return f"ERROR: cannot read '{path}': {type(e).__name__}"
     out = []
     width = len(str(end))
-    for i in range(start - 1, end):
-        out.append(f"{str(i + 1).rjust(width)}│ {lines[i].rstrip()}")
+    for offset, line in enumerate(sliced):
+        out.append(f"{str(start + offset).rjust(width)}│ {line.rstrip()}")
     header = f"`{path}` lines {start}-{end} of {total}:\n"
     if end < total:
         out.append(f"... [{total - end} more lines below; request a higher range to see them]")
@@ -455,8 +542,14 @@ def list_dir(path, repo_root):
     return _truncate(f"`{path}`:\n" + "\n".join(rows))
 
 
-def find_callers(symbol, repo_root, src_dir, default_ext):
-    """Find files referencing a symbol, ranked by count, with line snippets."""
+def find_callers(symbol, repo_root, src_dir, default_ext, deadline=None):
+    """Find files referencing a symbol, ranked by count, with line snippets.
+
+    `deadline` (optional): monotonic-seconds budget. Walk-based search
+    checks every _DEADLINE_CHECK_INTERVAL files; on timeout, returns the
+    partial results gathered so far with a notice in the header so the
+    model can keep investigating with what we have.
+    """
     if not symbol or not isinstance(symbol, str):
         return "ERROR: symbol must be a non-empty string"
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
@@ -472,7 +565,11 @@ def find_callers(symbol, repo_root, src_dir, default_ext):
         return f"ERROR: configured source dir '{src_dir}' resolves outside the repo root"
     file_hits = {}
     seen = set()
+    files_visited = 0
+    deadline_hit = False
     for dirpath, _, files in os.walk(search_root):
+        if deadline_hit:
+            break
         for fn in files:
             if not fn.endswith(default_ext):
                 continue
@@ -483,6 +580,14 @@ def find_callers(symbol, repo_root, src_dir, default_ext):
             if real_full in seen:
                 continue
             seen.add(real_full)
+            files_visited += 1
+            if (
+                deadline is not None
+                and files_visited % _DEADLINE_CHECK_INTERVAL == 0
+                and _deadline_exceeded(deadline)
+            ):
+                deadline_hit = True
+                break
             try:
                 with open(full, encoding="utf-8", errors="ignore") as f:
                     matches = []
@@ -498,6 +603,8 @@ def find_callers(symbol, repo_root, src_dir, default_ext):
                 rel = os.path.relpath(full, real_root)
                 file_hits[rel] = (occurrences, matches)
     if not file_hits:
+        if deadline_hit:
+            return _deadline_error("find_callers")
         return f"No files reference '{symbol}' in {src_dir}"
     ranked = sorted(file_hits.items(), key=lambda kv: -kv[1][0])
     total = len(ranked)
@@ -519,13 +626,16 @@ def find_callers(symbol, repo_root, src_dir, default_ext):
     return _truncate("\n".join(out))
 
 
-def find_tests_for(target, repo_root, src_dir, default_ext, test_dir_override=""):
+def find_tests_for(target, repo_root, src_dir, default_ext, test_dir_override="", deadline=None):
     """Find test files for a source file or symbol.
 
     First looks for naming-convention matches (X.<ext> → XTest.<ext> /
     XSpec.<ext> / X_test.<ext> / test_X.<ext>) under the test directory
     derived from src_dir or test_dir_override, then grep-matches the symbol
     name in remaining test files. Returns up to 20 candidates.
+
+    `deadline` (optional): monotonic-seconds budget for the walk. Stops
+    early on timeout with whatever was found so far.
     """
     if not target or not isinstance(target, str):
         return "ERROR: target must be a non-empty string"
@@ -554,8 +664,12 @@ def find_tests_for(target, repo_root, src_dir, default_ext, test_dir_override=""
     # os.walk doesn't cause the non-conventional path to win.
     by_real = {}
     limit = 20
+    files_visited = 0
+    deadline_hit = False
 
     for dirpath, _, files in os.walk(test_root):
+        if deadline_hit:
+            break
         for fn in files:
             if not fn.endswith(default_ext):
                 continue
@@ -573,6 +687,14 @@ def find_tests_for(target, repo_root, src_dir, default_ext, test_dir_override=""
             # tracked so symlink-ordering doesn't trap a worse path.
             if existing is None and len(by_real) >= limit:
                 continue
+            files_visited += 1
+            if (
+                deadline is not None
+                and files_visited % _DEADLINE_CHECK_INTERVAL == 0
+                and _deadline_exceeded(deadline)
+            ):
+                deadline_hit = True
+                break
             rel = os.path.relpath(full, real_root)
             if is_convention:
                 by_real[real_full] = (True, rel)
@@ -591,6 +713,8 @@ def find_tests_for(target, repo_root, src_dir, default_ext, test_dir_override=""
             break
 
     if not by_real:
+        if deadline_hit:
+            return _deadline_error("find_tests_for")
         return f"No tests found for '{target}' under {os.path.relpath(test_root, real_root)}"
     # Convention names first, then grep matches; walk order preserved
     # within each group via dict insertion order.
@@ -601,11 +725,18 @@ def find_tests_for(target, repo_root, src_dir, default_ext, test_dir_override=""
 
 
 class ToolRunner:
-    """Dispatches tool calls to the right implementation. Stateless across calls."""
+    """Dispatches tool calls to the right implementation. Stateless across calls.
 
-    def __init__(self, cfg, repo_root):
+    `pipeline_deadline` (optional, monotonic-seconds): threaded through to
+    walk-based tools so a single grep_codebase / find_callers call on a
+    giant repo can't blow past the pipeline wall-clock budget. The
+    agent-loop sets this before each agent run.
+    """
+
+    def __init__(self, cfg, repo_root, pipeline_deadline=None):
         self._cfg = cfg
         self._repo_root = repo_root
+        self._pipeline_deadline = pipeline_deadline
 
     def run(self, name, args):
         """Execute a tool call. Returns a string. Never raises."""
@@ -619,6 +750,7 @@ class ToolRunner:
                     repo_root=self._repo_root,
                     src_dir=self._cfg.codebase_src_dir,
                     default_ext=self._cfg.codebase_file_ext,
+                    deadline=self._pipeline_deadline,
                 )
             if name == "read_file":
                 return read_file(
@@ -638,6 +770,7 @@ class ToolRunner:
                     repo_root=self._repo_root,
                     src_dir=self._cfg.codebase_src_dir,
                     default_ext=self._cfg.codebase_file_ext,
+                    deadline=self._pipeline_deadline,
                 )
             if name == "find_tests_for":
                 return find_tests_for(
@@ -646,6 +779,7 @@ class ToolRunner:
                     src_dir=self._cfg.codebase_src_dir,
                     default_ext=self._cfg.codebase_file_ext,
                     test_dir_override=getattr(self._cfg, "codebase_test_dir", "") or "",
+                    deadline=self._pipeline_deadline,
                 )
             return f"ERROR: unknown tool '{name}'"
         except Exception as e:

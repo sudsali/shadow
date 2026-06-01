@@ -20,8 +20,16 @@ The 3-agent pipeline was developed for an internal Bedrock-based bot (`deequ-bot
 
 No fork needed unless you plan to modify Shadow. Install:
 
-1. **Add `.github/workflows/shadow.yml`** ([template](examples/caller-workflow.yml)):
+1. **Add `.github/workflows/shadow.yml`** — copy [examples/caller-workflow.yml](examples/caller-workflow.yml) verbatim; the snippet below is a contract reminder, not a working file (it omits `on:` triggers and the workflow-level `permissions:` block both required for the workflow to fire and post comments):
    ```yaml
+   on:
+     pull_request_target:
+       types: [opened, reopened, synchronize]
+   permissions:
+     contents: read
+     id-token: write
+     pull-requests: write
+     issues: write
    jobs:
      shadow:
        # @v0 = moving tag (auto-updates). For production, pin to a 40-char
@@ -38,7 +46,7 @@ No fork needed unless you plan to modify Shadow. Install:
 3. **Set `AWS_ROLE_ARN` secret** (format: `arn:aws:iam::123456789012:role/shadow-bot-ci`) — see [AWS setup](#aws-setup).
 4. **Open a PR** — the bot reviews it.
 
-> **Preflight check (recommended):** before opening your first PR, run `python -m shadow.doctor` from a clone of `sudsali/shadow`. It validates the IAM trust policy, Bedrock model access, `.shadow.yml` schema, and prompt loading. Each failure prints a fix link.
+> **Preflight check (recommended):** before opening your first PR, run `python -m shadow.doctor` from a clone of `sudsali/shadow`. It validates `AWS_ROLE_ARN` shape, the assumed identity (`sts:GetCallerIdentity`), real Bedrock model access (1-token Converse for Opus 4.7 + Haiku 4.5), `.shadow.yml` schema, and prompt loading. It does NOT inspect the IAM trust policy itself — a misconfigured `sub`/`job_workflow_ref` only surfaces from a real GitHub Actions run. Each failure prints a fix link.
 
 ## AWS setup
 
@@ -146,6 +154,9 @@ Shadow reads these from the workflow's `env:` block. The defaults are conservati
 | `BOT_INVESTIGATOR_MAX_TURNS` | `15` | Hard cap on Investigator agent loop turns |
 | `BOT_CRITIC_MAX_TURNS` | `10` | Hard cap on Critic agent loop turns |
 | `BOT_AGENT_MAX_DIFF_CHARS` | `200000` | Per-agent diff truncation limit |
+| `BOT_MAX_RUNS_PER_HOUR` | `20` | Per-(repo, item) hourly cap on Shadow workflow runs. `0` disables. Hit → ESCALATE with `shadow:rate-limited` label. |
+| `BOT_MAX_DIFF_FOR_REVIEW_CHARS` | `100000` | Pre-flight diff cap. Diff > this → ESCALATE before any Bedrock call. |
+| `BOT_MAX_FILES_FOR_REVIEW` | `50` | Pre-flight file-count cap. PR with > N files → ESCALATE before any Bedrock call. |
 | `BOT_PIPELINE_WALL_CLOCK_S` | `480` | Total agent-pipeline wall-clock budget (seconds) |
 | `BOT_REPORTER_MIN_REMAINING_S` | `60` | Wall-clock floor below which Reporter is pre-empted |
 | `BOT_AGENT_PIPELINE` | `1` (on) | Set `0`/`false`/`no`/`off` to fall back to legacy two-phase (requires `*_PROMPT` overrides). |
@@ -213,7 +224,7 @@ Every analyze run writes a `shadow_result.json` artifact (uploaded by the workfl
 | `existing_feedback` always empty | Caller workflow's `permissions:` doesn't include `pull-requests: read` | The reusable workflow declares this on its analyze job; if you copied a custom caller, ensure permissions are at least `pull-requests: read` to fetch existing PR review comments. |
 | `Artifact integrity check failed: artifact from different workflow_run` | The `act` job downloaded an artifact uploaded by a different run (manual replay, race) | Re-trigger the workflow from the latest commit. To opt out (e.g., when running both jobs in a single combined workflow), set `SHADOW_VERIFY_ARTIFACT=false`. |
 | CFN stack fails with `EntityAlreadyExists: GitHubOidcProvider` | Your account already has the GitHub OIDC provider; the stack tried to create a duplicate | Re-run the stack with `ExistingOidcProviderArn` set to your existing provider's ARN (`aws iam list-open-id-connect-providers`). |
-| `python -m shadow.doctor` reports `Missing Bedrock inference profiles` | Model access not yet granted in your region | AWS console → Bedrock → Model access → enable Anthropic Opus 4.7 + Haiku 4.5; auto-approve in ≤15min. |
+| `python -m shadow.doctor` reports `Bedrock <agent> model … unreachable in <region>: AccessDeniedException` | Model access not yet granted in your region | AWS console → Bedrock → Model access → enable Anthropic Opus 4.7 + Haiku 4.5; auto-approve in ≤15min. |
 
 ## Removing Shadow
 
@@ -239,6 +250,14 @@ That's higher than single-call review bots ($0.05-$0.30 range). The cost buys ve
       paths-ignore: ['**/*.md', 'docs/**', '.github/**']
   ```
 - Cap monthly spend via [AWS Budgets](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-create.html) on Bedrock — a $50/month alert + auto-action (e.g., set the repo variable `SHADOW_DISABLED=true`) is a 5-minute setup that prevents runaway costs.
+
+## Cost protection
+
+The per-PR cost levers above bound a single review. These three guards bound fleet-wide spend, defending against PR/issue spam and runaway traffic:
+
+- **Per-PR rate limit** (`BOT_MAX_RUNS_PER_HOUR`, default `20`). Caps how many times a single PR/issue can trigger the workflow per rolling hour. Beyond the limit the bot escalates with the `shadow:rate-limited` label instead of running the agent pipeline. Defends against an adversary who closes/reopens or edits a PR title in a loop to bypass the per-item `already_commented` / `BOT_MAX_REPLIES` guards. Set to `0` to disable.
+- **Pre-flight diff size caps** (`BOT_MAX_DIFF_FOR_REVIEW_CHARS`, `BOT_MAX_FILES_FOR_REVIEW`, defaults `100000` / `50`). A 50-file PR makes Investigator read 5+ files, Critic re-reads, Reporter formats — costs multiply across stages. Diff or file count above the cap → ESCALATE before any Bedrock call. Pre-flight escalation is ~$0; a runaway pipeline on a giant PR is ~$5+.
+- **AWS Budgets opt-in via CFN** (`MonthlyBudgetLimit` parameter on `shadow-iam-stack.yaml`). Set to a positive USD amount + a `BudgetEmailAddress` and the stack creates an `AWS::Budgets::Budget` filtered to `Amazon Bedrock` spend, with email alerts at 80% and 100% of the limit. `0` skips Budget creation (default — AWS Budgets bills $0.02/budget/day, so opt-in only). Email-only today; auto-shutdown via `SHADOW_DISABLED` is a planned upgrade.
 
 ## Roadmap
 

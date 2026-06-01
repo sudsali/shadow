@@ -4,6 +4,13 @@
 
 name: Shadow
 
+# Embed the PR/issue number in the run name. The reusable workflow's run-name
+# is ignored when invoked via workflow_call — only the caller's template
+# applies. This is what lets the rate-limit gate (BOT_MAX_RUNS_PER_HOUR) match
+# prior runs for issue/issue_comment events, where the workflow_run record
+# has no `pull_requests` array to match on.
+run-name: "Shadow #${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}"
+
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]

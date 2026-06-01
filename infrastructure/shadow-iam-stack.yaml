@@ -12,14 +12,19 @@ Metadata:
       - Label: { default: "Adopter scoping" }
         Parameters: [GitHubOrg, GitHubRepo]
       - Label: { default: "Shadow pinning" }
-        Parameters: [ShadowWorkflowRef]
+        Parameters: [ShadowSourceRepo, ShadowWorkflowRef]
       - Label: { default: "Bedrock region" }
         Parameters: [BedrockRegion]
+      - Label: { default: "Cost protection (optional)" }
+        Parameters: [MonthlyBudgetLimit, BudgetEmailAddress]
     ParameterLabels:
       GitHubOrg:           { default: "Your GitHub org or user (e.g., awslabs, sudsali)" }
       GitHubRepo:          { default: "Your repo name (use * for org-wide; audit first)" }
+      ShadowSourceRepo:    { default: "Shadow source repo (sudsali/shadow upstream, or your fork)" }
       ShadowWorkflowRef:   { default: "Shadow workflow ref pin (use * for v0; SHA for prod)" }
       BedrockRegion:       { default: "Bedrock region (us-east-1, us-west-2, us-east-2)" }
+      MonthlyBudgetLimit:  { default: "Monthly Bedrock spend limit in USD (0 = disabled)" }
+      BudgetEmailAddress:  { default: "Email for budget threshold notifications" }
 
 Parameters:
   GitHubOrg:
@@ -38,6 +43,19 @@ Parameters:
     AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$|^\\*$"
     MinLength: 1
     MaxLength: 100
+
+  ShadowSourceRepo:
+    Type: String
+    Description: >-
+      Owner/repo of the Shadow source you're using. Defaults to the
+      upstream `sudsali/shadow`; set to your own fork (e.g.,
+      `acme-corp/shadow-fork`) if you maintain a hardened private copy.
+      Embedded into the OIDC `job_workflow_ref` claim so a different
+      Shadow source cannot assume this role.
+    Default: "sudsali/shadow"
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+    MinLength: 3
+    MaxLength: 140
 
   ShadowWorkflowRef:
     Type: String
@@ -66,8 +84,28 @@ Parameters:
       the ARN to reuse it).
     Default: ""
 
+  MonthlyBudgetLimit:
+    Type: Number
+    Description: >-
+      Optional monthly Bedrock spend limit in USD. When > 0, creates an
+      AWS Budget that emails BudgetEmailAddress when actual spend exceeds
+      this value. Email-only today; auto-shutdown via SHADOW_DISABLED is
+      a planned upgrade. Set to 0 to skip Budget creation.
+    Default: 0
+    MinValue: 0
+
+  BudgetEmailAddress:
+    Type: String
+    Description: >-
+      Email to notify when monthly budget threshold is hit. Required only
+      if MonthlyBudgetLimit > 0.
+    Default: ""
+
 Conditions:
   CreateOidcProvider: !Equals [!Ref ExistingOidcProviderArn, ""]
+  CreateBudget: !And
+    - !Not [!Equals [!Ref MonthlyBudgetLimit, 0]]
+    - !Not [!Equals [!Ref BudgetEmailAddress, ""]]
 
 Resources:
   GitHubOidcProvider:
@@ -112,7 +150,7 @@ Resources:
                 "token.actions.githubusercontent.com:sub":
                   !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
                 "token.actions.githubusercontent.com:job_workflow_ref":
-                  !Sub "sudsali/shadow/.github/workflows/shadow-review.yml@${ShadowWorkflowRef}"
+                  !Sub "${ShadowSourceRepo}/.github/workflows/shadow-review.yml@${ShadowWorkflowRef}"
       Policies:
         - PolicyName: BedrockInvoke
           PolicyDocument:
@@ -149,6 +187,43 @@ Resources:
         - { Key: ManagedBy, Value: shadow-iam-stack }
         - { Key: Component, Value: shadow-bot }
 
+  ShadowMonthlyBudget:
+    # Optional fleet-wide cost protection. The per-PR caps
+    # (BOT_INVESTIGATOR_MAX_TOOL_CALLS, max_diff_for_review) bound a single
+    # review's spend; this Budget catches sustained high traffic that those
+    # don't address (e.g., a popular repo getting 200 PRs/day). Email-only
+    # for now — auto-shutdown is a follow-up.
+    Type: AWS::Budgets::Budget
+    Condition: CreateBudget
+    Properties:
+      Budget:
+        BudgetName: !Sub "shadow-bot-monthly-${GitHubOrg}"
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - "Amazon Bedrock"
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmailAddress
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmailAddress
+
 Outputs:
   ShadowRoleArn:
     Description: >-
@@ -166,7 +241,7 @@ Outputs:
 
   TrustPolicyScope:
     Description: Effective scope of the OIDC trust (sub + job_workflow_ref).
-    Value: !Sub "repo:${GitHubOrg}/${GitHubRepo}:* AND job_workflow_ref:sudsali/shadow/.github/workflows/shadow-review.yml@${ShadowWorkflowRef}"
+    Value: !Sub "repo:${GitHubOrg}/${GitHubRepo}:* AND job_workflow_ref:${ShadowSourceRepo}/.github/workflows/shadow-review.yml@${ShadowWorkflowRef}"
 
   BedrockRegion:
     Description: Region where this role can invoke Bedrock.

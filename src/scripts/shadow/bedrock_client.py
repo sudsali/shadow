@@ -1,5 +1,7 @@
 import logging
 import re
+import time
+from typing import Optional, Tuple
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -8,6 +10,22 @@ from botocore.exceptions import ClientError, BotoCoreError
 logger = logging.getLogger("shadow")
 
 _CIRCUIT_BREAKER_THRESHOLD = 3
+
+
+def _is_throttling_error(exc):
+    """Detect a Bedrock ThrottlingException. boto3 surfaces it as ClientError
+    with Error.Code='ThrottlingException'. Distinguishing throttle from
+    other ClientError lets the caller skip (rerun later) instead of
+    escalating a transient capacity hit.
+    """
+    if not isinstance(exc, ClientError):
+        return False
+    code = ""
+    try:
+        code = (exc.response or {}).get("Error", {}).get("Code", "") or ""
+    except (AttributeError, TypeError):
+        return False
+    return code == "ThrottlingException" or code == "TooManyRequestsException"
 
 # Models that reject `temperature` (and `top_p`, `top_k`) in inferenceConfig.
 # Anchored at a non-digit boundary so `claude-opus-4-7` and
@@ -46,6 +64,11 @@ class BedrockClient:
         # Opus calls in the same run. Resets per-process; GHA runs ephemeral.
         self._failures = {}
         self._open_models = set()
+        # Track most-recent failure across all models so callers (main.py)
+        # can embed which model actually failed in artifact reasons. Tuple
+        # of (model_id, exception_class_name, monotonic_timestamp,
+        # is_throttle). None until the first failure.
+        self._last_failure = None
 
     def _client_for_timeout(self, timeout_seconds):
         """Return a client whose read_timeout is at most timeout_seconds.
@@ -75,15 +98,62 @@ class BedrockClient:
 
     def _record_success(self, model_id):
         self._failures[model_id] = 0
+        # Clear the failure attribution. Without this, last_failed_model()
+        # and last_failure_was_throttle() report a long-past failure even
+        # after a successful subsequent call — a Reporter that succeeded
+        # after the Investigator throttled would mis-attribute its later
+        # `inv_result.text == ""` (e.g., Guardrail intervention) as a
+        # throttle and SKIP a workflow run that needed to ESCALATE.
+        self._last_failure = None
 
     def _record_failure(self, model_id, exc):
         n = self._failures.get(model_id, 0) + 1
         self._failures[model_id] = n
+        # Stash the most recent failure for last_failed_model(). Callers
+        # embed this in the artifact's `reason` to attribute which agent
+        # stage (investigator / critic / reporter) actually broke.
+        self._last_failure = (
+            model_id,
+            type(exc).__name__,
+            time.monotonic(),
+            _is_throttling_error(exc),
+        )
         logger.error(
             f"Bedrock failed for {model_id} ({n}/{_CIRCUIT_BREAKER_THRESHOLD}): {exc}"
         )
         if n >= _CIRCUIT_BREAKER_THRESHOLD:
             self._open_models.add(model_id)
+
+    def _record_guardrail(self, model_id):
+        """Stamp _last_failure with a synthetic GuardrailIntervention so
+        last_failed_model() doesn't return stale state from an earlier turn
+        (or None after a recent _record_success). Not counted as a circuit-
+        breaker failure — guardrail blocks are policy decisions, not
+        infrastructure problems — so self._failures is left untouched.
+        """
+        self._last_failure = (
+            model_id,
+            "GuardrailIntervention",
+            time.monotonic(),
+            False,  # never a throttle
+        )
+
+    def last_failed_model(self) -> Optional[Tuple[str, str]]:
+        """Return (model_id, exception_class_name) of the most recent
+        Bedrock failure across all models, or None if no failure has been
+        recorded. Used by main.py to embed the failed model in the
+        artifact reason so operators can tell which agent stage broke.
+        """
+        if self._last_failure is None:
+            return None
+        model_id, exc_name, _ts, _is_throttle = self._last_failure
+        return (model_id, exc_name)
+
+    def last_failure_was_throttle(self) -> bool:
+        """True iff the most recent failure was a ThrottlingException.
+        Callers use this to write a SKIP (rerun later) instead of
+        escalating a 200-PR storm on a 5min throttle window."""
+        return self._last_failure is not None and self._last_failure[3]
 
     @property
     def has_guardrail(self):
@@ -156,6 +226,7 @@ class BedrockClient:
 
             if resp.get("stopReason") == "guardrail_intervened":
                 logger.warning("Guardrail intervened: %s", resp.get("trace", ""))
+                self._record_guardrail(target_model)
                 return None
 
             output = resp.get("output", {}).get("message", {}).get("content", [])
@@ -226,6 +297,7 @@ class BedrockClient:
             resp = client.converse(**kwargs)
             if resp.get("stopReason") == "guardrail_intervened":
                 logger.warning("Guardrail intervened: %s", resp.get("trace", ""))
+                self._record_guardrail(effective_model)
                 return None, resp.get("usage", {}) or {}
             output = resp.get("output", {}).get("message", {}).get("content", [])
             if not output:
@@ -292,6 +364,7 @@ class BedrockClient:
             resp = self._client.converse(**kwargs)
             if resp.get("stopReason") == "guardrail_intervened":
                 logger.warning("Guardrail intervened on tool-use turn: %s", resp.get("trace", ""))
+                self._record_guardrail(effective_model)
                 return None
             self._record_success(effective_model)
             return resp

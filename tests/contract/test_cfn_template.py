@@ -39,14 +39,18 @@ def doc():
 def test_template_top_level_shape(doc):
     assert doc["AWSTemplateFormatVersion"] == "2010-09-09"
     assert "Description" in doc
-    assert set(doc["Resources"].keys()) == {"GitHubOidcProvider", "ShadowBotRole"}
+    assert set(doc["Resources"].keys()) == {
+        "GitHubOidcProvider", "ShadowBotRole", "ShadowMonthlyBudget",
+    }
 
 
 def test_required_parameters_present(doc):
     # These names appear in adopter docs / one-click URL query string;
     # renaming breaks every existing Launch Stack link.
-    expected = {"GitHubOrg", "GitHubRepo", "ShadowWorkflowRef",
-                "BedrockRegion", "ExistingOidcProviderArn"}
+    expected = {"GitHubOrg", "GitHubRepo", "ShadowSourceRepo",
+                "ShadowWorkflowRef", "BedrockRegion",
+                "ExistingOidcProviderArn",
+                "MonthlyBudgetLimit", "BudgetEmailAddress"}
     assert set(doc["Parameters"].keys()) == expected
 
 
@@ -108,6 +112,62 @@ def test_bedrock_region_parameter_is_constrained(doc):
     # parameter would silently let adopters request access in regions
     # where Anthropic models are not yet available.
     assert set(region["AllowedValues"]) == {"us-east-1", "us-west-2", "us-east-2"}
+
+
+def test_monthly_budget_parameter_present(doc):
+    """Cost-protection parameters must keep the same names + types so a
+    re-launch of the stack with the same template URL is idempotent."""
+    params = doc["Parameters"]
+    assert params["MonthlyBudgetLimit"]["Type"] == "Number"
+    assert params["MonthlyBudgetLimit"]["Default"] == 0
+    # MinValue prevents adopters from passing -1 to "disable" — that path
+    # would create a Budget with a negative limit, which AWS silently
+    # accepts as "alert immediately on every dollar spent".
+    assert params["MonthlyBudgetLimit"]["MinValue"] == 0
+    assert params["BudgetEmailAddress"]["Type"] == "String"
+    assert params["BudgetEmailAddress"]["Default"] == ""
+
+
+def test_monthly_budget_resource_present_when_set(doc):
+    """The Budget resource must filter on Bedrock spend only — a missing
+    CostFilter would alert on the entire account's spend, masking what
+    Shadow itself costs."""
+    budget = doc["Resources"]["ShadowMonthlyBudget"]
+    assert budget["Type"] == "AWS::Budgets::Budget"
+    # Conditional creation: stack with limit=0 must NOT create a Budget,
+    # because AWS Budgets bills $0.02/budget/day and a no-op budget is
+    # money on fire.
+    assert budget["Condition"] == "CreateBudget"
+    props = budget["Properties"]
+    assert props["Budget"]["BudgetType"] == "COST"
+    assert props["Budget"]["TimeUnit"] == "MONTHLY"
+    assert props["Budget"]["CostFilters"]["Service"] == ["Amazon Bedrock"]
+    notifications = props["NotificationsWithSubscribers"]
+    # At least 80% + 100% thresholds — the 80% gives breathing room before
+    # the budget blows; the 100% is the ground-truth "we hit the limit".
+    thresholds = sorted(n["Notification"]["Threshold"] for n in notifications)
+    assert thresholds == [80, 100]
+    for n in notifications:
+        assert n["Notification"]["NotificationType"] == "ACTUAL"
+        assert n["Notification"]["ComparisonOperator"] == "GREATER_THAN"
+        for sub in n["Subscribers"]:
+            assert sub["SubscriptionType"] == "EMAIL"
+
+
+def test_shadow_source_repo_default_and_threading(doc):
+    """ShadowSourceRepo defaults to upstream sudsali/shadow but threads through
+    job_workflow_ref so a fork can stand up its own role without editing the
+    template. Locks both the default and the substitution to prevent regression
+    to a hardcoded `sudsali/shadow` in the trust policy."""
+    params = doc["Parameters"]
+    assert params["ShadowSourceRepo"]["Default"] == "sudsali/shadow"
+    role = doc["Resources"]["ShadowBotRole"]["Properties"]
+    statement = role["AssumeRolePolicyDocument"]["Statement"][0]
+    job_ref = statement["Condition"]["StringLike"][
+        "token.actions.githubusercontent.com:job_workflow_ref"
+    ]
+    assert "${ShadowSourceRepo}" in job_ref
+    assert "sudsali/shadow/" not in job_ref
 
 
 def test_cloudwatch_policy_scoped_to_shadow_namespace(doc):

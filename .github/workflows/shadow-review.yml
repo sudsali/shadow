@@ -1,4 +1,8 @@
 name: Shadow Review (reusable)
+# NB: GitHub ignores `run-name` in workflow_call callees — only the caller's
+# template wins. The rate-limit gate's name-needle fallback (used for
+# issue_comment events without a pull_requests array) is documented as the
+# adopter's responsibility in `examples/caller-workflow.yml`.
 
 # Two-job security split — canonical defense against pull_request_target
 # misuse (GitHub Security Lab, Panther T1195.002 Sigma rule):

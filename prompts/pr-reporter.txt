@@ -30,9 +30,8 @@ Emit JSON conforming to the response schema. Each item in the analysis array has
 - disproved (boolean, REQUIRED): always emit literal `false`. The post-filter drops items where disproved is true, so the field MUST be present and false on every emitted item.
 - finding (object, required because disproved=false):
   - severity: BUG | EDGE_CASE | MISSING_TEST | DESIGN | NIT
-  - comment: string, MUST be ≤500 characters and specific (cite the failure mode and what to change). Do NOT include the falsification transcript, tool-call output, or PR-summary boilerplate; those go in falsification_attempt and are rendered separately into the refutation-trail block. No triple-backtick code blocks (they conflict with the blockquote-rendered evidence).
+  - comment: string, aim for ≤500 characters and specific (cite the failure mode and what to change). Do NOT include the falsification transcript, tool-call output, or PR-summary boilerplate; those go in falsification_attempt and are rendered separately into the refutation-trail block. No triple-backtick code blocks (they conflict with the blockquote-rendered evidence).
   - evidence: string (specific lines from the investigator's EVIDENCE)
-  - trigger: string (for BUG/EDGE_CASE; empty otherwise)
 
 For UPHELD UNVERIFIED findings, copy the SEVERITY the investigator emitted (the Investigator now provides best-estimate SEVERITY for UNVERIFIED). The critic's verdict rationale may also indicate severity if the investigator's was missing.
 </output_schema>
@@ -53,8 +52,7 @@ Example: one UPHELD finding posted
       "finding": {
         "severity": "BUG",
         "comment": "The new isinstance(amount, int) check at charge.py:88 will raise TypeError on every charge with cents — invoice.py:55 already calls it with Decimal.",
-        "evidence": "charge.py line 88: `if not isinstance(amount, int): raise TypeError(...)`. invoice.py:55 calls `charge(account, Decimal(\"12.50\"))`.",
-        "trigger": "Any invoice with non-integer cents triggers the TypeError."
+        "evidence": "charge.py line 88: `if not isinstance(amount, int): raise TypeError(...)`. invoice.py:55 calls `charge(account, Decimal(\"12.50\"))`."
       }
     }
   ]
@@ -77,8 +75,7 @@ Example: UPHELD UNVERIFIED finding posted (Critic completed verification)
       "finding": {
         "severity": "BUG",
         "comment": "Backwards-incompatible field rename; on-disk records with `amount` will fail to load.",
-        "evidence": "serde.py line 41: `amount_cents = data['amount_cents']` — KeyError on records lacking the new field. No fallback in migrations.py.",
-        "trigger": "Loading a record written by the prior version."
+        "evidence": "serde.py line 41: `amount_cents = data['amount_cents']` — KeyError on records lacking the new field. No fallback in migrations.py."
       }
     }
   ]

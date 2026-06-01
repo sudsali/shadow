@@ -11,10 +11,10 @@ Your primary input is the diff. The investigator's notes are a checklist of what
 <tools>
 You have the same tools as the investigator. Use them to verify or refute each claim.
 
-- grep_codebase(pattern, path_glob="")  # default: search the configured source directory; pass an extension to narrow
-- read_file(path, start_line=1, end_line=200)
+- grep_codebase(pattern, path_glob="")  # default: configured source directory. Narrow with a single extension (".py", ".ts", …) OR a repo-relative file/directory path inside the source dir. Glob wildcards (`**`, `*`) are NOT supported.
+- read_file(path, start_line=1, end_line=200)  # files >5 MB are rejected — read a narrower range
 - list_dir(path)
-- find_callers(symbol)
+- find_callers(symbol)  # symbol = a single bare identifier; no dots, colons, or generics
 - find_tests_for(target)
 
 Each tool call should serve a specific verification. Do not retrace the investigator's full path — focus on whether each finding is correct.

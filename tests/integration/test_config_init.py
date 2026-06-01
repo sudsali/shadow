@@ -222,9 +222,13 @@ def test_max_bot_replies_yaml_zero_is_valid(monkeypatch):
 
 def test_max_bot_replies_garbage_yaml_falls_back(monkeypatch):
     """A yaml typo (string, list, bool, negative, absurdly high) must not
-    silently disable the cap or set it to a value an attacker could exploit."""
+    silently disable the cap or set it to a value an attacker could exploit.
+
+    The "--5", "++5", "-+5" forms previously crashed Config() with
+    ValueError because `lstrip("+-")` left "5" (passing isdigit) but
+    `int("--5")` raises. Lock that regression here."""
     _set_required_env(monkeypatch)
-    for garbage in ("not-a-number", "-1", "9999", "true"):
+    for garbage in ("not-a-number", "-1", "9999", "true", "--5", "++5", "-+5", "5  abc"):
         # Re-isolate env per iteration so future-added env-mutating asserts in
         # this loop don't leak across.
         monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
@@ -235,6 +239,23 @@ def test_max_bot_replies_garbage_yaml_falls_back(monkeypatch):
             monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
             from shadow.config import Config
             assert Config().max_bot_replies == 2, f"failed for: {garbage!r}"
+
+
+def test_max_replies_dashprefixed_falls_back(monkeypatch):
+    """`max_replies: --5` would crash Config() — `lstrip("+-")` leaves "5"
+    which passes isdigit, but `int("--5")` raises ValueError. Adopter typo
+    bringing down the bot is unacceptable; lock the regression."""
+    _set_required_env(monkeypatch)
+    for prefixed in ("--5", "++5", "-+5", "+-5"):
+        monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, ".shadow.yml").write_text(
+                f"bot:\n  max_replies: \"{prefixed}\"\n"
+            )
+            monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+            from shadow.config import Config
+            # Must not raise. Must default to 2.
+            assert Config().max_bot_replies == 2, f"failed for: {prefixed!r}"
 
 
 @pytest.fixture(autouse=True)

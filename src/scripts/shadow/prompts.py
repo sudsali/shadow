@@ -77,16 +77,6 @@ def get_followup_prompt():
     return _get_prompt("FOLLOWUP_PROMPT", "followup.txt")
 
 
-# Legacy two-phase PR-review prompts — env-only stubs. The agent pipeline
-# (BOT_AGENT_PIPELINE=1, default) doesn't read these.
-def get_pr_file_review_prompt():
-    return os.getenv("PR_FILE_REVIEW_PROMPT", "")
-
-
-def get_pr_file_review_report_prompt():
-    return os.getenv("PR_FILE_REVIEW_REPORT_PROMPT", "")
-
-
 def prompt_version(template):
     return hashlib.sha256(template.encode()).hexdigest()[:8]
 

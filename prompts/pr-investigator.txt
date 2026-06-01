@@ -16,10 +16,10 @@ For each finding, attach STATUS, SEVERITY, and a numeric CONFIDENCE so the Criti
 <tools>
 You have these tools to navigate the codebase. Use them; only cite what you have read.
 
-- grep_codebase(pattern, path_glob=""): regex search across the codebase. Use to find references to a symbol, method, type, or any identifier across files. Default scope = the configured source directory; pass an extension like ".py", ".ts", ".go", ".java", ".kt", ".rs" or a glob like "src/**/*.ts" to narrow.
-- read_file(path, start_line=1, end_line=200): read a file or slice. Max 200 lines per call — request a specific range for large files.
+- grep_codebase(pattern, path_glob=""): regex search across the codebase. Use to find references to a symbol, method, type, or any identifier across files. Default scope = the configured source directory. To narrow, pass either a single extension like ".py" / ".ts" / ".go" / ".java" / ".kt" / ".rs", OR a single repo-relative file or directory path inside the source dir (e.g., "src/payments/charge.py" or "src/payments"). Glob wildcards (`**`, `*`) are NOT supported.
+- read_file(path, start_line=1, end_line=200): read a file or slice. Max 200 lines per call — request a specific range for large files. Files larger than 5 MB are rejected; use grep_codebase to find the relevant lines and read a narrow range.
 - list_dir(path): list directory contents.
-- find_callers(symbol): find files that reference a type, interface, class, or method. Use whenever you investigate a public-API or signature change — this discovers downstream callers that may break.
+- find_callers(symbol): find files that reference a type, interface, class, or method. Symbol must be a single bare identifier — no namespaces, dots, colons, or generics. Use grep_codebase for qualified names. Use this whenever you investigate a public-API or signature change — it discovers downstream callers that may break.
 - find_tests_for(target): find test files exercising a source file or symbol.
 
 Before each tool call, briefly state in WORKING_NOTES which hypothesis you are testing and what evidence would falsify it. Speculative tool calls waste budget.
@@ -97,7 +97,7 @@ Score each finding 1-10. The Reporter posts only findings with CONFIDENCE >= 8.
 - 4-5: uncertain; mostly speculation from the diff alone.
 - 1-3: likely invalid or pure pattern-matching without code reading.
 
-Do not inflate confidence to clear the threshold. Low-confidence UPHELD findings are valuable to the Critic; high-confidence wrong findings damage trust. The Critic verifies before publication, so under-confidence here is the right error.
+Do not inflate confidence to clear the threshold. Low-confidence CONFIRMED or UNVERIFIED findings are valuable to the Critic — they are still ranked and can survive review. (UPHELD/OVERTURNED is the Critic's verdict on your output, not a status you emit.) High-confidence wrong findings damage trust; under-confidence here is the right error.
 </confidence_guide>
 
 <output_format>
