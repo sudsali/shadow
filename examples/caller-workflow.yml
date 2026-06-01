@@ -1,0 +1,52 @@
+# Drop-in caller workflow. Save as `.github/workflows/shadow.yml` in your repo.
+# Then add a `.shadow.yml` config file (see examples/shadow.example.yml).
+# Then set the `AWS_ROLE_ARN` repository secret. That's the install.
+
+name: Shadow
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        description: "PR number to review"
+      dry_run:
+        type: boolean
+        default: true
+      shadow_ref:
+        default: v0
+        description: "Shadow ref to pin to: v0 (moving tag), or a 40-char commit SHA"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+
+# Kill-switch: set repo or org **variable** SHADOW_DISABLED=true (Settings →
+# Secrets and variables → Actions → Variables tab; not the Secrets tab) to
+# disable both jobs without deleting this workflow file.
+jobs:
+  shadow:
+    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      dry_run: ${{ inputs.dry_run && 'true' || 'false' }}
+      shadow_ref: ${{ inputs.shadow_ref || 'v0' }}
+      # Cost levers — uncomment to override the defaults (10/8). Lower
+      # numbers cap Bedrock spend at the cost of review depth.
+      # investigator_max_tool_calls: "5"
+      # critic_max_tool_calls: "4"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      # Optional Bedrock overrides — leave commented to use defaults.
+      # BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
+      # BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID }}
+      # BEDROCK_CRITIC_MODEL_ID: ${{ secrets.BEDROCK_CRITIC_MODEL_ID }}
+      # GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
+      # GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
+      # KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
+      # KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
+      # SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,0 +1,27 @@
+TOOL BUDGET EXHAUSTED. Stop investigating and emit your findings now. Tool calls on this turn will be ignored and your conclusions lost.
+
+You may have an instinct to "just verify one more thing" before emitting. RESIST this. The correct action when evidence is incomplete is to mark the hypothesis STATUS: UNVERIFIED — the Critic completes the verification. UNVERIFIED is a valid, expected outcome and is preferable to a dropped finding.
+
+Before emitting blocks, scan your earlier WORKING_NOTES for every hypothesis ID you mentioned — including ones you never reached a conclusion on. Emit a STATUS block for each one. Missing a hypothesis from the final emit is worse than emitting it as UNVERIFIED.
+
+Use the same STATUS block format as <output_format>:
+
+ID: <short-id>
+FILE: <repo-relative-path>
+LINE: <line-number>
+HYPOTHESIS: <one sentence>
+FALSIFICATION_ATTEMPT: <what you searched, what you found>
+STATUS: CONFIRMED | DISPROVED | UNVERIFIED
+(For CONFIRMED and UNVERIFIED, also emit:)
+SEVERITY: BUG | EDGE_CASE | MISSING_TEST | DESIGN | NIT
+CONFIDENCE: <1-10>
+COMMENT: <one or two sentences>
+EVIDENCE: <specific lines and content from files you read; "(none reachable within budget)" if exhausted>
+TRIGGER: <concrete scenario, for BUG/EDGE_CASE; empty otherwise>
+
+For DISPROVED, omit SEVERITY/CONFIDENCE/COMMENT/EVIDENCE/TRIGGER.
+
+Mid-turn STATUS blocks you already emitted in earlier turns are preserved; add only the blocks for hypotheses you have not yet committed.
+
+If you have no findings of any kind, emit exactly: No confirmed issues found.
+

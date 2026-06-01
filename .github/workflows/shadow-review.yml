@@ -1,0 +1,198 @@
+name: Shadow Review (reusable)
+
+# Two-job security split — canonical defense against pull_request_target
+# misuse (GitHub Security Lab, Panther T1195.002 Sigma rule):
+#   analyze: id-token:write only. Calls Bedrock; cannot post comments.
+#   act:     pull-requests:write only. Posts to GitHub; cannot call AWS.
+
+on:
+  workflow_call:
+    inputs:
+      shadow_ref:
+        type: string
+        default: v0
+        description: "git ref of sudsali/shadow to clone (tag, branch, or sha)"
+      pr_number:
+        type: string
+        required: false
+        description: "Override PR number for workflow_dispatch flows"
+      dry_run:
+        type: string
+        default: "false"
+      investigator_max_tool_calls:
+        type: string
+        default: "10"
+        description: "Cost cap. Lowering trades depth for cost (~$2/PR per 5 calls)."
+      critic_max_tool_calls:
+        type: string
+        default: "8"
+        description: "Cost cap on the disprove pass."
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+        description: "IAM role ARN with Bedrock invoke permission. Trust policy MUST include this repo via job_workflow_ref claim."
+      KB_S3_BUCKET:
+        required: false
+      KB_S3_KEY:
+        required: false
+      BEDROCK_MODEL_ID:
+        required: false
+      BEDROCK_REPORTER_MODEL_ID:
+        required: false
+      BEDROCK_CRITIC_MODEL_ID:
+        required: false
+      GUARDRAIL_ID:
+        required: false
+      GUARDRAIL_VERSION:
+        required: false
+      SLACK_WEBHOOK_URL:
+        required: false
+        description: "Slack webhook URL for escalation notifications. Empty = Slack off."
+
+# Concurrency keyed on the caller's PR number so multiple PRs in the
+# adopter repo run in parallel but same-PR pushes serialize.
+concurrency:
+  group: shadow-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # observed up to ~7min on slow Bedrock days
+    # `vars` (not `secrets`) is the only way to gate a workflow_call job
+    # at the job level — `secrets` is not in the allowed `if:` context.
+    # Adopters set repo or org variable SHADOW_DISABLED=true.
+    if: ${{ vars.SHADOW_DISABLED != 'true' }}
+    # Reusable workflows do NOT inherit caller permissions — declare the
+    # minimum each job needs. analyze needs pull-requests:read to fetch
+    # existing PR review comments (so re-runs don't re-raise addressed
+    # issues), and id-token:write to assume the AWS role via OIDC.
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    steps:
+      - name: Checkout caller repo (base branch — secure by design)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          # No `ref:` here: pull_request_target defaults to base branch HEAD,
+          # which is the security-locked path. Reading PR head would expose
+          # secrets to attacker code (the "pwn request" pattern).
+
+      - name: Checkout Shadow bot
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: sudsali/shadow
+          ref: ${{ inputs.shadow_ref }}
+          # Distinct path so an adopter repo with `.shadow-bot/` already
+          # committed doesn't collide (checkout v4 fails on non-empty path).
+          path: shadow-bot-runtime
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r shadow-bot-runtime/requirements.txt
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: us-east-1
+
+      - name: Run analysis
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_TYPE: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_AFTER: ${{ github.event.pull_request.head.sha || github.event.after }}
+          KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
+          KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
+          BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID || 'us.anthropic.claude-opus-4-7' }}
+          BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID || 'us.anthropic.claude-haiku-4-5-20251001-v1:0' }}
+          BEDROCK_CRITIC_MODEL_ID: ${{ secrets.BEDROCK_CRITIC_MODEL_ID }}
+          GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
+          GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
+          BOT_AGENT_PIPELINE: "1"
+          BOT_INVESTIGATOR_MAX_TOOL_CALLS: ${{ inputs.investigator_max_tool_calls }}
+          BOT_CRITIC_MAX_TOOL_CALLS: ${{ inputs.critic_max_tool_calls }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ARTIFACT_PATH: ${{ runner.temp }}/shadow_result.json
+          # Audit anchor — what shadow_ref this run pinned. GITHUB_SHA is the
+          # adopter's PR commit, not Shadow's. The provenance block reads this.
+          SHADOW_BOT_REF: ${{ inputs.shadow_ref }}
+          # Tell the bot where the adopter repo's checkout is so .shadow.yml
+          # resolves correctly (the repo we're reviewing, not the bot itself).
+          SHADOW_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          cd shadow-bot-runtime
+          PYTHONPATH=src/scripts python -m shadow.main analyze
+        working-directory: ${{ github.workspace }}
+
+      - name: Upload analyze artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shadow-result
+          path: ${{ runner.temp }}/shadow_result.json
+          retention-days: 7
+
+  act:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: analyze
+    if: ${{ vars.SHADOW_DISABLED != 'true' }}
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout caller repo (for .shadow.yml — bot_name etc.)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout Shadow bot
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: sudsali/shadow
+          ref: ${{ inputs.shadow_ref }}
+          path: shadow-bot-runtime
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r shadow-bot-runtime/requirements.txt
+
+      - name: Download analyze artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: shadow-result
+          path: ${{ runner.temp }}
+
+      - name: Execute actions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_TYPE: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ARTIFACT_PATH: ${{ runner.temp }}/shadow_result.json
+          # act() also reads .shadow.yml for bot_name etc.
+          SHADOW_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          cd shadow-bot-runtime
+          PYTHONPATH=src/scripts python -m shadow.main act

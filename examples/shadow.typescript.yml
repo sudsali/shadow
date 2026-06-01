@@ -1,0 +1,10 @@
+# TypeScript / Node example.
+codebase:
+  src_dir: src                   # required
+  file_ext: .ts                  # also matches .tsx via prefix
+  test_dir: tests                # or set to src/ if tests are co-located (.test.ts)
+  language: typescript
+
+bot:
+  name: shadow
+  escalate_label: needs-human

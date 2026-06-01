@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Shadow Bot — IAM role for the GitHub Actions reusable workflow at
+  sudsali/shadow. Creates the OIDC provider (idempotent), an IAM role
+  scoped to the adopter's repo via `sub` + pinned to Shadow's workflow
+  file via `job_workflow_ref`, and a Bedrock invoke permission policy.
+  Drop the role ARN output into your repo's `AWS_ROLE_ARN` secret.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Adopter scoping" }
+        Parameters: [GitHubOrg, GitHubRepo]
+      - Label: { default: "Shadow pinning" }
+        Parameters: [ShadowWorkflowRef]
+      - Label: { default: "Bedrock region" }
+        Parameters: [BedrockRegion]
+    ParameterLabels:
+      GitHubOrg:           { default: "Your GitHub org or user (e.g., awslabs, sudsali)" }
+      GitHubRepo:          { default: "Your repo name (use * for org-wide; audit first)" }
+      ShadowWorkflowRef:   { default: "Shadow workflow ref pin (use * for v0; SHA for prod)" }
+      BedrockRegion:       { default: "Bedrock region (us-east-1, us-west-2, us-east-2)" }
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: GitHub org or user that owns the repo running Shadow.
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9-]*$"
+    MinLength: 1
+    MaxLength: 39
+
+  GitHubRepo:
+    Type: String
+    Description: >-
+      Repo name (required, no default). Use a single repo. `*` allows the
+      entire org to assume this role — only set that if you've audited
+      every repo in the org.
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$|^\\*$"
+    MinLength: 1
+    MaxLength: 100
+
+  ShadowWorkflowRef:
+    Type: String
+    Description: >-
+      `job_workflow_ref` pin for Shadow's reusable workflow. Use `*` for
+      a quick start (any version of the workflow can assume this role).
+      For production, pin to a 40-char SHA you've audited:
+      `refs/tags/v0` or `<commit-sha>`. The trailing wildcard lets the
+      same role work across Shadow patch releases until you re-pin.
+    Default: "*"
+    MinLength: 1
+    MaxLength: 200
+
+  BedrockRegion:
+    Type: String
+    Description: Region where Bedrock model access is granted.
+    Default: us-east-1
+    AllowedValues: [us-east-1, us-west-2, us-east-2]
+
+  ExistingOidcProviderArn:
+    Type: String
+    Description: >-
+      Optional: ARN of an existing GitHub OIDC provider in this account.
+      Leave blank to have this stack create one (idempotent — if a
+      provider already exists with this URL, the stack will fail; pass
+      the ARN to reuse it).
+    Default: ""
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref ExistingOidcProviderArn, ""]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # GitHub publishes the leaf cert thumbprint at https://token.actions.githubusercontent.com/.well-known/openid-configuration.
+      # AWS no longer requires this list as of 2023, but CloudFormation still expects the field.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  ShadowBotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: shadow-bot-ci
+      Description: >-
+        Assumed by sudsali/shadow's reusable workflow via OIDC. Scoped to
+        the configured GitHubOrg/GitHubRepo via `sub` and pinned to
+        Shadow's workflow file via `job_workflow_ref`.
+      # 2h ceiling. Most reviews finish in &lt;10min; bump above the IAM 1h
+      # default so a long agent loop (large diff + max tool calls) can
+      # finish without ExpiredToken mid-Bedrock-call.
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+              StringLike:
+                "token.actions.githubusercontent.com:sub":
+                  !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+                "token.actions.githubusercontent.com:job_workflow_ref":
+                  !Sub "sudsali/shadow/.github/workflows/shadow-review.yml@${ShadowWorkflowRef}"
+      Policies:
+        - PolicyName: BedrockInvoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:Converse
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}::foundation-model/anthropic.*"
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}:${AWS::AccountId}:inference-profile/us.anthropic.*"
+                  # Cross-region inference profiles route to *-east-1, *-west-2,
+                  # *-east-2 backends; allow invoke against those backends.
+                  - "arn:aws:bedrock:us-east-1::foundation-model/anthropic.*"
+                  - "arn:aws:bedrock:us-west-2::foundation-model/anthropic.*"
+                  - "arn:aws:bedrock:us-east-2::foundation-model/anthropic.*"
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Custom metrics under namespace=Shadow only — adopters can
+              # graph CostPerPR / CriticOverturnRate / Invocations etc. in
+              # their own CloudWatch console. Scoped via condition rather
+              # than resource (PutMetricData has no resource ARNs).
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "cloudwatch:namespace": Shadow
+      Tags:
+        - { Key: ManagedBy, Value: shadow-iam-stack }
+        - { Key: Component, Value: shadow-bot }
+
+Outputs:
+  ShadowRoleArn:
+    Description: >-
+      Paste this as the `AWS_ROLE_ARN` repository secret in GitHub. From
+      your repo: Settings → Secrets and variables → Actions → New
+      repository secret.
+    Value: !GetAtt ShadowBotRole.Arn
+
+  OidcProviderArn:
+    Description: GitHub Actions OIDC provider ARN (created or reused).
+    Value: !If
+      - CreateOidcProvider
+      - !Ref GitHubOidcProvider
+      - !Ref ExistingOidcProviderArn
+
+  TrustPolicyScope:
+    Description: Effective scope of the OIDC trust (sub + job_workflow_ref).
+    Value: !Sub "repo:${GitHubOrg}/${GitHubRepo}:* AND job_workflow_ref:sudsali/shadow/.github/workflows/shadow-review.yml@${ShadowWorkflowRef}"
+
+  BedrockRegion:
+    Description: Region where this role can invoke Bedrock.
+    Value: !Ref BedrockRegion
+
+  NextSteps:
+    Description: What to do after this stack succeeds.
+    Value: >-
+      1) Copy ShadowRoleArn output. 2) Repo settings → Secrets → set
+      AWS_ROLE_ARN. 3) Add caller workflow from
+      examples/caller-workflow.yml. 4) Open a PR.

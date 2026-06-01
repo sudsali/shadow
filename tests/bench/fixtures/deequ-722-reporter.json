@@ -1,0 +1,28 @@
+{
+  "analysis": [
+    {
+      "file": "src/main/scala/com/amazon/deequ/analyzers/StateProvider.scala",
+      "line": 124,
+      "hypothesis": "state.asInstanceOf[FrequenciesAndNumRows] throws ClassCastException after HistogramBinned's state type was changed to BinnedFrequencies.",
+      "falsification_attempt": "Used find_callers and read StateProvider.scala lines 115-135; cast is unguarded. Confirmed the BinnedFrequencies type does not satisfy the cast.",
+      "disproved": false,
+      "finding": {
+        "severity": "BUG",
+        "comment": "Unguarded cast will throw on hot upgrade against any pre-existing BinnedFrequencies state. Wrap in a match or guard the load path.",
+        "evidence": "Line 124 calls state.asInstanceOf[FrequenciesAndNumRows]; line 87 in HistogramBinned is the BinnedFrequencies producer."
+      }
+    },
+    {
+      "file": "src/main/scala/com/amazon/deequ/analyzers/HistogramBinned.scala",
+      "line": 62,
+      "hypothesis": "Pattern match is non-exhaustive after BinningStrategy got the EquiWidth case added.",
+      "falsification_attempt": "Read the sealed trait; all 3 cases are matched at lines 62-71.",
+      "disproved": true,
+      "finding": {
+        "severity": "BUG",
+        "comment": "(would not post — disproved)",
+        "evidence": "(would not post — disproved)"
+      }
+    }
+  ]
+}

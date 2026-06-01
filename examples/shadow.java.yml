@@ -1,0 +1,15 @@
+# Java/Maven example. Place at repo root as `.shadow.yml`.
+codebase:
+  src_dir: src/main/java         # required
+  file_ext: .java
+  test_dir: src/test/java        # inferred from src_dir
+  language: java                 # legacy issue-respond path only
+
+bot:
+  name: shadow
+  escalate_label: needs-human
+
+models:
+  investigator: us.anthropic.claude-opus-4-7
+  critic: us.anthropic.claude-opus-4-7
+  reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0

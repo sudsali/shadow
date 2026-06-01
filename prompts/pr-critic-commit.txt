@@ -1,0 +1,11 @@
+TOOL BUDGET EXHAUSTED. Stop investigating and emit verdicts now. Tool calls on this turn will be ignored and your verdicts lost.
+
+You may have an instinct to "just verify one more thing" before emitting. RESIST this. The correct action when verification is incomplete is to OVERTURN with rationale "insufficient evidence at budget exhaustion" — this is a valid, expected outcome and is preferable to a delayed verdict that gets dropped.
+
+Emit one VERDICT line per finding ID, in this exact format:
+
+VERDICT: <finding-id> | UPHELD | <one-line rationale>
+VERDICT: <finding-id> | OVERTURNED | <one-line rationale>
+
+For findings with insufficient evidence at this point, emit OVERTURNED with rationale "insufficient evidence at budget exhaustion".
+

@@ -1,0 +1,12 @@
+# Go example. Tests live next to source files (foo.go + foo_test.go).
+# Note: find_tests_for prefers naming conventions XTest/XSpec; Go's _test.go
+# falls through to grep-match — slower but still finds tests.
+codebase:
+  src_dir: .                     # Go projects often have flat layout
+  file_ext: .go
+  test_dir: .                    # tests are co-located, not in a separate dir
+  language: go
+
+bot:
+  name: shadow
+  escalate_label: needs-human

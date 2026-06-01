@@ -1,0 +1,11 @@
+WORKING_NOTES: Verifying C1 — investigator claims state.asInstanceOf at StateProvider.scala:124 is unguarded after the BinnedFrequencies type rename. Read the file directly.
+
+VERDICT: C1 | UPHELD | Read StateProvider.scala lines 115-135; line 124 holds `state.asInstanceOf[FrequenciesAndNumRows]` with no guard. The new BinnedFrequencies type does not satisfy this cast. find_callers shows 3 sites; one passes a BinnedFrequencies state value at line 87. Cannot disprove.
+
+WORKING_NOTES: C2 — investigator claims unsafe pattern match in HistogramBinned.scala. Reading the file to verify.
+
+VERDICT: C2 | OVERTURNED | The cited pattern match at HistogramBinned.scala:62 is exhaustive — sealed trait `BinningStrategy` has 3 cases and all 3 are matched. Investigator missed the case for `EquiWidth` at line 67.
+
+WORKING_NOTES: C3 marked UNVERIFIED by investigator — completing investigation.
+
+VERDICT: C3 | OVERTURNED | UNVERIFIED finding; my own find_callers and grep searches did not produce decisive evidence within the budget. Defaulting to OVERTURNED per "better silent than wrong."
