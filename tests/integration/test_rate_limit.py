@@ -83,10 +83,12 @@ def test_rate_limit_env_beats_yaml(monkeypatch):
 
 
 def test_rate_limit_garbage_yaml_falls_back(monkeypatch):
-    """A yaml typo (string, list, bool, negative, absurdly high) must not
-    silently disable the cap or set it to a value an attacker could exploit."""
+    """A yaml typo that doesn't parse as int must not silently disable the
+    cap or crash Config(). Out-of-range parsed ints clamp to the [0, 100]
+    boundary with a warning instead — see test_config_init's
+    test_max_runs_per_hour_out_of_range_clamps_with_warning."""
     _set_required_env(monkeypatch)
-    for garbage in ("not-a-number", "-1", "9999", "true"):
+    for garbage in ("not-a-number", "true"):
         _clear_rate_env(monkeypatch)
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, ".shadow.yml").write_text(

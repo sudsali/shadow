@@ -9,3 +9,11 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Local-only tooling — adopters install actionlint from upstream, not from a
+# vendored binary. CI also installs from upstream.
+actionlint
+actionlint_*.tar.gz
+
+# Hackathon / demo prep. Lives in a separate private repo.
+demo/

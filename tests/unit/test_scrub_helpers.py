@@ -94,3 +94,10 @@ class TestScrubMarkerToken:
 
     def test_truncates(self):
         assert _scrub_marker_token("x" * 50, "d") == "x" * 32
+
+    def test_rejects_name_that_trips_sanitizer(self):
+        # bot_name='system' would render `<!-- system:clean -->` whose
+        # `system:` substring matches sanitizer's _INJECTION_MARKERS list,
+        # ESCALATING every clean PR review silently. Reject at config-load.
+        assert _scrub_marker_token("system", "shadow") == "shadow"
+        assert _scrub_marker_token("my-system", "shadow") == "shadow"

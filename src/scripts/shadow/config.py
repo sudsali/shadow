@@ -134,7 +134,7 @@ class Config:
             "BOT_MAX_REPLIES",
             shadow_config.get(yml, "bot", "max_replies"),
             2,
-        ), 2)
+        ), 2, name="BOT_MAX_REPLIES (or yaml bot.max_replies)")
         # Per-(repo, item) hourly rate limit on Shadow workflow runs. Defends
         # against PR/issue spam triggering a fleet of expensive Bedrock calls
         # past the per-item already_commented / max_bot_replies guards. 0
@@ -144,7 +144,7 @@ class Config:
             "BOT_MAX_RUNS_PER_HOUR",
             shadow_config.get(yml, "bot", "max_runs_per_hour"),
             20,
-        ), 20)
+        ), 20, name="BOT_MAX_RUNS_PER_HOUR (or yaml bot.max_runs_per_hour)")
         # Pre-flight diff/file-count caps. A 50-file PR ripples through
         # Investigator → Critic → Reporter, each potentially reading 5+
         # files; cost amplification is multiplicative. Escalating before
@@ -160,8 +160,11 @@ class Config:
             "bug", "enhancement", "question", "documentation", "help-wanted",
         }
 
-        # Default ON. BOT_AGENT_PIPELINE=0 falls back to legacy two-phase, which
-        # needs *_PROMPT env-var overrides — expect prompt_load_failed otherwise.
+        # Default ON. BOT_AGENT_PIPELINE=0 makes PR events ESCALATE with
+        # reason `pipeline_disabled`; issue/followup paths still run their
+        # legacy issue-classify / followup prompts. To disable the bot
+        # fleet-wide, set repo/org variable SHADOW_DISABLED=true (gates
+        # both jobs in the reusable workflow).
         _pipeline_env = os.getenv("BOT_AGENT_PIPELINE", "").strip().lower()
         self.agent_pipeline = _pipeline_env not in ("0", "false", "no", "off")
 
@@ -176,12 +179,12 @@ class Config:
         self.critic_max_tool_output_chars = _int_env(
             "BOT_CRITIC_MAX_TOOL_OUTPUT", 200_000,
         )
-        # Non-positive would silently drop the diff; fail safe to default.
+        # _int_env handles negatives; this guards the literal `=0` case which
+        # would silently drop the diff (Investigator/Critic see empty string).
         agent_max_diff = _int_env("BOT_AGENT_MAX_DIFF_CHARS", 200_000)
-        if agent_max_diff <= 0:
+        if agent_max_diff == 0:
             logger.warning(
-                "BOT_AGENT_MAX_DIFF_CHARS=%d is non-positive; using default 200_000",
-                agent_max_diff,
+                "BOT_AGENT_MAX_DIFF_CHARS=0 would drop the diff; using default 200000",
             )
             agent_max_diff = 200_000
         self.agent_max_diff_chars = agent_max_diff
@@ -200,12 +203,27 @@ def _require(name):
 
 def _int_env(name, default):
     """Garbage env values fall back to default rather than killing analyze()
-    before any artifact is written."""
+    before any artifact is written. Negative values also fall back to default
+    with a named warning — every _int_env caller is a positive cost/wall-clock
+    cap whose downstream consumer either gates on `> 0` (max_diff_for_review,
+    max_files_for_review at main.py:1152-1153) or treats negative values as
+    immediate-exhaustion (tool-call / turn / budget caps), so a `-1` typo
+    would silently disable pre-flight defenses or short-circuit the agent
+    pipeline."""
+    raw = os.getenv(name)
     try:
-        return int(os.getenv(name) or default)
+        n = int(raw) if raw else default
     except (TypeError, ValueError):
-        logger.warning("Env var %s is not an integer; using default %d", name, default)
+        logger.warning(
+            "%s=%r is not parseable as int; using default %d", name, raw, default,
+        )
         return default
+    if n < 0:
+        logger.warning(
+            "%s=%d is negative; using default %d", name, n, default,
+        )
+        return default
+    return n
 
 
 def _str_or_default(val, default):
@@ -228,15 +246,30 @@ def _scrub_label(val, default):
     return val[:50]
 
 
-def _int_in_range_or_default(val, default):
-    """yaml int, env str, or wrong type → default. Bound to [0, 100] so a
-    yaml typo can't disable the cap entirely or set it absurdly high.
-    `0` is valid and means "no limit applied" (callers decide per-field
-    semantics — e.g., max_bot_replies=0 means escalate-on-first-followup,
-    max_runs_per_hour=0 means disable the rate limit). Garbage strings
-    (`"--5"`, `"++5"`, `"5  abc"`, signed beyond the bound) fall back to
-    default rather than crash Config()."""
+def _int_in_range_or_default(val, default, *, name):
+    """Yaml int, env str, or wrong type → default. Cap range [0, 100] so a
+    yaml typo can't set the bound absurdly high. `0` is valid and means
+    "no limit applied" (callers decide per-field semantics — e.g.,
+    max_bot_replies=0 means escalate-on-first-followup, max_runs_per_hour=0
+    means disable the rate limit). Garbage strings (`"--5"`, `"++5"`,
+    `"5  abc"`) fall back to default rather than crash Config().
+
+    Negative parsed ints fall back to default (with warning) rather than
+    clamping to 0 — clamping a negative typo to 0 silently flips
+    rate-limit/reply semantics into "disabled" / "escalate-on-first-reply",
+    which is the exact opposite of what an operator typing -1 intended.
+    Out-of-range positive ints clamp to 100 with warning so an operator
+    who set BOT_MAX_RUNS_PER_HOUR=200 hoping to double the cap doesn't
+    silently get the default (20) — the original rate-limit-tuning footgun.
+    Both diagnostics name the env var so the misconfig is greppable in
+    workflow logs.
+
+    `name` is keyword-only and required so a future caller can't omit it
+    and silently re-introduce the no-warning footgun."""
     if isinstance(val, bool):
+        logger.warning(
+            "%s=%r is a bool, not an int; using default %d", name, val, default,
+        )
         return default
     if isinstance(val, int):
         n = val
@@ -244,11 +277,28 @@ def _int_in_range_or_default(val, default):
         try:
             n = int(val.strip())
         except (TypeError, ValueError):
+            logger.warning(
+                "%s=%r is not parseable as int; using default %d",
+                name, val, default,
+            )
             return default
     else:
+        logger.warning(
+            "%s=%r is %s, not an int; using default %d",
+            name, val, type(val).__name__, default,
+        )
         return default
-    if n < 0 or n > 100:
+    if n < 0:
+        logger.warning(
+            "%s=%d is negative; using default %d", name, n, default,
+        )
         return default
+    if n > 100:
+        logger.warning(
+            "%s=%d is above maximum (100); clamping to 100 (default would be %d)",
+            name, n, default,
+        )
+        return 100
     return n
 
 
@@ -271,11 +321,40 @@ def _scrub_marker_token(val, default):
     """Embedded in `<!-- {bot}:clean -->`; reject HTML-comment-breaking chars.
     Collapses runs of `-`/`_` to a single char so adjacent dashes can't break
     out of the `<!-- ... -->` envelope (HTML forbids `--` inside a comment
-    body — `<!-- shadow--evil:clean -->` would close the comment early)."""
+    body — `<!-- shadow--evil:clean -->` would close the comment early).
+
+    Also rejects a small, hardcoded list of token-suffix patterns whose
+    rendered marker (`<!-- {name}:clean -->`) would trip the sanitizer's
+    injection-marker list (e.g., bot_name='system' renders
+    `<!-- system:clean -->`; the `system:` substring matches sanitizer's
+    `system:` marker → every clean review nulls to ESCALATE without a
+    marker). The reject-list is intentionally NOT imported from
+    sanitizer._INJECTION_MARKERS — that list grows as new injection classes
+    are discovered, and each addition must NOT silently invalidate adopters'
+    deployed bot_name. Keep this list narrow and bump it explicitly with a
+    CHANGELOG entry when a new bot_name pattern needs blocking."""
     if not isinstance(val, str):
         return default
     val = "".join(c for c in val if c.isalnum() or c in "-_")
     val = re.sub(r"-{2,}", "-", val)
     val = re.sub(r"_{2,}", "_", val)
     val = val.strip("-_")
-    return val[:32] if val else default
+    val = val[:32]
+    if not val:
+        return default
+    # Hardcoded reject-list. The rendered marker shape is `:clean -->`, so
+    # a bot_name ending in any of these tokens produces `<token>:clean` which
+    # would substring-match sanitizer._INJECTION_MARKERS. Today only `system`
+    # actually trips a marker; the others are reserved for future markers
+    # added in lockstep with a CHANGELOG entry.
+    _REJECTED_NAME_SUFFIXES = ("system",)
+    lower_val = val.lower()
+    for suffix in _REJECTED_NAME_SUFFIXES:
+        if lower_val == suffix or lower_val.endswith("-" + suffix) or lower_val.endswith("_" + suffix):
+            logger.warning(
+                "bot.name=%r would render a marker tripping the sanitizer; "
+                "using default %r",
+                val, default,
+            )
+            return default
+    return val

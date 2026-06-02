@@ -27,7 +27,12 @@ def _is_throttling_error(exc):
         return False
     return code == "ThrottlingException" or code == "TooManyRequestsException"
 
-# Models that reject `temperature` (and `top_p`, `top_k`) in inferenceConfig.
+# Models that reject sampling params (temperature, top_p, top_k) in
+# inferenceConfig — Opus 4.7 returns HTTP 400 if any are present. This
+# codebase only ever sends `temperature` (top_p / top_k are never set in
+# any call path), so the helper only strips `temperature`; if a future
+# caller starts setting top_p / top_k, the helper signature and the strip
+# branch must be extended in lockstep.
 # Anchored at a non-digit boundary so `claude-opus-4-7` and
 # `claude-opus-4-7-mini-*` match but a hypothetical `opus-4-70` does not.
 # Extend this pattern when a new family rejects sampling params.

@@ -221,14 +221,17 @@ def test_max_bot_replies_yaml_zero_is_valid(monkeypatch):
 
 
 def test_max_bot_replies_garbage_yaml_falls_back(monkeypatch):
-    """A yaml typo (string, list, bool, negative, absurdly high) must not
-    silently disable the cap or set it to a value an attacker could exploit.
+    """A yaml typo that doesn't parse as int (string, bool, malformed sign
+    prefix, embedded garbage) must not silently disable the cap or crash
+    Config(). Out-of-range positive ints clamp to 100; negative ints fall
+    back to default — see test_max_bot_replies_negative_falls_back_with_warning
+    and test_max_runs_per_hour_out_of_range_clamps_with_warning.
 
     The "--5", "++5", "-+5" forms previously crashed Config() with
     ValueError because `lstrip("+-")` left "5" (passing isdigit) but
     `int("--5")` raises. Lock that regression here."""
     _set_required_env(monkeypatch)
-    for garbage in ("not-a-number", "-1", "9999", "true", "--5", "++5", "-+5", "5  abc"):
+    for garbage in ("not-a-number", "true", "--5", "++5", "-+5", "5  abc"):
         # Re-isolate env per iteration so future-added env-mutating asserts in
         # this loop don't leak across.
         monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
@@ -239,6 +242,189 @@ def test_max_bot_replies_garbage_yaml_falls_back(monkeypatch):
             monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
             from shadow.config import Config
             assert Config().max_bot_replies == 2, f"failed for: {garbage!r}"
+
+
+def test_max_runs_per_hour_out_of_range_clamps_with_warning(monkeypatch, caplog):
+    """An operator who sets BOT_MAX_RUNS_PER_HOUR=200 hoping to double the
+    cap must NOT silently fall back to the default (20). The helper clamps
+    to the [0, 100] boundary and emits a logger.warning naming the env var
+    so the misconfiguration is visible in workflow logs."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_RUNS_PER_HOUR", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BOT_MAX_RUNS_PER_HOUR", "200")
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_runs_per_hour == 100
+        assert any(
+            "BOT_MAX_RUNS_PER_HOUR" in r.message and "100" in r.message
+            for r in caplog.records
+        ), f"no clamp warning found; records: {[r.message for r in caplog.records]}"
+
+
+def test_max_runs_per_hour_negative_falls_back_with_warning(monkeypatch, caplog):
+    """A negative typo (BOT_MAX_RUNS_PER_HOUR=-1) must NOT clamp to 0.
+    `0` means 'rate limit disabled' downstream (main.py:208), so clamping
+    a negative typo to 0 silently disables the spam-defense the cap is
+    designed to provide. Fall back to default (20) with a named warning
+    instead so the misconfig is visible AND the cap stays active."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_RUNS_PER_HOUR", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BOT_MAX_RUNS_PER_HOUR", "-1")
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_runs_per_hour == 20, (
+            "negative must fall back to default 20, not clamp to 0 "
+            "(clamp-to-0 silently disables the rate limit downstream)"
+        )
+        assert any(
+            "BOT_MAX_RUNS_PER_HOUR" in r.message
+            and r.message.endswith("using default 20")
+            for r in caplog.records
+        ), f"no negative-fallback warning; records: {[r.message for r in caplog.records]}"
+
+
+def test_max_bot_replies_negative_falls_back_with_warning(monkeypatch, caplog):
+    """A negative typo (BOT_MAX_REPLIES=-1) must NOT clamp to 0.
+    `0` means 'escalate-on-first-followup' downstream (main.py:230), so
+    a negative typo silently flips followup-handling to immediate-escalate.
+    Fall back to default (2) with a named warning instead."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BOT_MAX_REPLIES", "-1")
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_bot_replies == 2, (
+            "negative must fall back to default 2, not clamp to 0 "
+            "(clamp-to-0 silently flips to escalate-on-first-followup)"
+        )
+        assert any(
+            "BOT_MAX_REPLIES" in r.message
+            and r.message.endswith("using default 2")
+            for r in caplog.records
+        ), f"no negative-fallback warning; records: {[r.message for r in caplog.records]}"
+
+
+def test_max_bot_replies_out_of_range_clamps_with_warning(monkeypatch, caplog):
+    """An operator who sets BOT_MAX_REPLIES=500 must NOT silently fall back
+    to default (2). Clamps to 100 with a named warning instead. Symmetric
+    counterpart to test_max_runs_per_hour_out_of_range_clamps_with_warning,
+    so a regression in the BOT_MAX_REPLIES caller's name= plumbing
+    is caught by the test suite."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BOT_MAX_REPLIES", "500")
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_bot_replies == 100
+        assert any(
+            "BOT_MAX_REPLIES" in r.message and "100" in r.message
+            for r in caplog.records
+        ), f"no clamp warning found; records: {[r.message for r in caplog.records]}"
+
+
+def test_int_env_negative_falls_back_with_warning(monkeypatch, caplog):
+    """`_int_env` callers gate downstream on `> 0` (BOT_MAX_DIFF_FOR_REVIEW_CHARS,
+    BOT_MAX_FILES_FOR_REVIEW at main.py:1152-1153) so a negative typo would
+    silently disable pre-flight caps. Lock fall-back-to-default for the
+    pre-flight diff cap as the canonical regression test for the broader
+    `_int_env` family."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_DIFF_FOR_REVIEW_CHARS", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BOT_MAX_DIFF_FOR_REVIEW_CHARS", "-1")
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_diff_for_review == 100_000, (
+            "negative must fall back to default 100_000, not pass through; "
+            "main.py:1152 gates on `> 0` so -1 would silently disable the cap"
+        )
+        assert any(
+            "BOT_MAX_DIFF_FOR_REVIEW_CHARS" in r.message
+            and r.message.endswith("using default 100000")
+            for r in caplog.records
+        ), f"no negative-fallback warning; records: {[r.message for r in caplog.records]}"
+
+
+def test_max_replies_yaml_bool_warns(monkeypatch, caplog):
+    """`bot.max_replies: true` (yaml bool) used to silently fall back to
+    default with no log line. The new branch logs a named warning so an
+    operator can grep workflow logs to find their misconfig."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".shadow.yml").write_text("bot:\n  max_replies: true\n")
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_bot_replies == 2
+        assert any(
+            "BOT_MAX_REPLIES" in r.message and "bool" in r.message
+            for r in caplog.records
+        ), f"no bool warning; records: {[r.message for r in caplog.records]}"
+
+
+def test_max_replies_yaml_garbage_string_warns(monkeypatch, caplog):
+    """`bot.max_replies: tres` (parse-fail) used to silently fall back. New
+    branch logs a named warning."""
+    import logging
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("BOT_MAX_REPLIES", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".shadow.yml").write_text("bot:\n  max_replies: tres\n")
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        with caplog.at_level(logging.WARNING, logger="shadow"):
+            cfg = Config()
+        assert cfg.max_bot_replies == 2
+        assert any(
+            "BOT_MAX_REPLIES" in r.message and "not parseable" in r.message
+            for r in caplog.records
+        ), f"no parse-fail warning; records: {[r.message for r in caplog.records]}"
+
+
+def test_agent_pipeline_off_spellings_disable(monkeypatch):
+    """README documents `0`/`false`/`no`/`off` (case-insensitive) as
+    disabling the agent pipeline. Lock the four-spelling promise so a
+    future refactor (e.g., switching to distutils.util.strtobool which
+    rejects `no`/`off`) doesn't silently re-enable for adopters who used
+    the alternate spellings."""
+    _set_required_env(monkeypatch)
+    for off_value in ("0", "false", "no", "off", "OFF", "False", "NO"):
+        monkeypatch.setenv("BOT_AGENT_PIPELINE", off_value)
+        from shadow.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+            cfg = Config()
+        assert cfg.agent_pipeline is False, f"failed for: {off_value!r}"
+    # Confirm a non-disabling value (typo) keeps the pipeline ON.
+    for on_value in ("1", "true", "yes", "on", "disabled", ""):
+        monkeypatch.setenv("BOT_AGENT_PIPELINE", on_value)
+        from shadow.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+            cfg = Config()
+        assert cfg.agent_pipeline is True, f"failed for: {on_value!r}"
 
 
 def test_max_replies_dashprefixed_falls_back(monkeypatch):

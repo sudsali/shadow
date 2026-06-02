@@ -189,10 +189,12 @@ Resources:
 
   ShadowMonthlyBudget:
     # Optional fleet-wide cost protection. The per-PR caps
-    # (BOT_INVESTIGATOR_MAX_TOOL_CALLS, max_diff_for_review) bound a single
-    # review's spend; this Budget catches sustained high traffic that those
-    # don't address (e.g., a popular repo getting 200 PRs/day). Email-only
-    # for now — auto-shutdown is a follow-up.
+    # (BOT_INVESTIGATOR_MAX_TOOL_CALLS, BOT_MAX_DIFF_FOR_REVIEW_CHARS) bound a
+    # single review's spend; the per-(repo, item) hourly cap
+    # (BOT_MAX_RUNS_PER_HOUR) limits force-push spam on a single PR; this
+    # Budget catches sustained high traffic that those don't address (e.g., a
+    # popular repo getting 200 PRs/day). Email-only for now — auto-shutdown
+    # is a follow-up.
     Type: AWS::Budgets::Budget
     Condition: CreateBudget
     Properties:

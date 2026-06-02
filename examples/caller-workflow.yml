@@ -14,10 +14,12 @@ run-name: "Shadow #${{ github.event.pull_request.number || github.event.issue.nu
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
-  # Issue review (optional). Triggers on issue creation/reopen only — comment
-  # events on issues are not handled by Shadow today.
+  # Issue review (optional). Shadow handles issues + issue_comment events.
+  # Add `issue_comment` if you want followup-reply behavior on existing issues.
   issues:
     types: [opened, reopened]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:
