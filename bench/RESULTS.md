@@ -13,7 +13,7 @@ For each repository, we picked **4 recently-merged "fix:" PRs** with real correc
 
 The Investigator and Critic see only the diff plus the codebase itself (via `read_file`/`grep_codebase`/`find_callers`). They do not see the upstream PR title, the upstream review thread, or the original fix commit message.
 
-## Results (c0b4297, measured 2026-06)
+## Results (measured 2026-06)
 
 | Repo | Lang | Upstream PR | Action | Findings | Severities | Cost | Critic overturn |
 |---|---|---|---|---|---|---|---|
@@ -29,15 +29,17 @@ The Investigator and Critic see only the diff plus the codebase itself (via `rea
 
 **Totals:** 9 PRs · 11 inline findings · $5.45 total · **mean $0.61/PR** · mean Critic overturn rate ~26%
 
-Each row was a fresh PR (new branch, new PR number) on `c0b4297`, opened to bypass Shadow's existing-feedback dedup. Run artifacts are linked in the [Reproducibility](#reproducibility) section.
+Each row was a fresh PR (new branch, new PR number) on the current revision, opened to bypass Shadow's existing-feedback dedup. Run artifacts are linked in the [Reproducibility](#reproducibility) section.
 
-### Pre-hardening reference (round-18, May 2026)
+### Earlier-revision reference (May 2026)
 
-Before the round-2/3/4/5 security hardening, the same corpus measured $0.41/PR mean and produced more findings on the borderline PRs (#6936 retry-NPE was 1 BUG at 0% overturn; #7000 netty was 1 BUG at 0% overturn). The ~50% cost shift comes from added Investigator/Critic budget and warning-emit overhead in the hardened pipeline. Findings on the headline bugs (S3 multipart concurrency #6986, nil-deref #9080) reproduce on c0b4297.
+An earlier revision of the same corpus measured $0.41/PR mean — before recent security-hardening work that added Investigator/Critic budget and validation overhead. The ~50% cost shift came with stronger envelope-tag neutralization, sanitizer-marker bypass defenses, and config-validation diagnostics. Findings on the headline bugs (S3 multipart concurrency #6986, nil-deref #9080) reproduce on the current revision.
 
-| Pre-hardening (round-18) totals | c0b4297 totals |
+| Earlier revision totals | Current revision totals |
 |---|---|
 | 9 PRs · 15 findings · $3.84 · $0.41/PR · 3.7% mean overturn | 9 PRs · 11 findings · $5.45 · $0.61/PR · ~26% mean overturn |
+
+The Critic's mean overturn rate of ~26% on the current revision (vs 3.7% earlier) is the disprove pass doing more work — overturning more candidate findings to keep the post-rate calibrated. We're tracking this as a quality signal: a 26% overturn rate means the Critic dropped roughly one in four Investigator candidates as not-actually-a-bug.
 
 ## Reading the table
 
