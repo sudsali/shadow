@@ -13,21 +13,31 @@ For each repository, we picked **4 recently-merged "fix:" PRs** with real correc
 
 The Investigator and Critic see only the diff plus the codebase itself (via `read_file`/`grep_codebase`/`find_callers`). They do not see the upstream PR title, the upstream review thread, or the original fix commit message.
 
-## Results
+## Results (c0b4297, measured 2026-06)
 
 | Repo | Lang | Upstream PR | Action | Findings | Severities | Cost | Critic overturn |
 |---|---|---|---|---|---|---|---|
-| `aws/aws-sdk-java-v2` | Java | [#6737](https://github.com/aws/aws-sdk-java-v2/pull/6737) | RESPOND | 1 | BUG | $0.67 | 0% |
-| `aws/aws-sdk-java-v2` | Java | [#6936](https://github.com/aws/aws-sdk-java-v2/pull/6936) | RESPOND | 1 | BUG | $0.39 | 0% |
-| `aws/aws-sdk-java-v2` | Java | [#6986](https://github.com/aws/aws-sdk-java-v2/pull/6986) | RESPOND | 3 | BUG, BUG, BUG | $0.45 | 0% |
-| `aws/aws-sdk-java-v2` | Java | [#7000](https://github.com/aws/aws-sdk-java-v2/pull/7000) | RESPOND | 1 | BUG | $0.34 | 0% |
-| `aws/karpenter-provider-aws` | Go | [#9080](https://github.com/aws/karpenter-provider-aws/pull/9080) | RESPOND | 2 | BUG, MISSING_TEST | $0.29 | 0% |
-| `aws/karpenter-provider-aws` | Go | [#9124](https://github.com/aws/karpenter-provider-aws/pull/9124) | RESPOND | 2 | BUG, MISSING_TEST | $0.55 | 0% |
-| `aws/karpenter-provider-aws` | Go | [#9170](https://github.com/aws/karpenter-provider-aws/pull/9170) | RESPOND | 2 | BUG, MISSING_TEST | $0.30 | 33% |
-| `aws/karpenter-provider-aws` | Go | [#9202](https://github.com/aws/karpenter-provider-aws/pull/9202) | RESPOND | 1 | BUG | $0.32 | 0% |
+| `aws/aws-sdk-java-v2` | Java | [#6737](https://github.com/aws/aws-sdk-java-v2/pull/6737) | RESPOND | 1 | BUG | $1.11 | 0% |
+| `aws/aws-sdk-java-v2` | Java | [#6936](https://github.com/aws/aws-sdk-java-v2/pull/6936) | RESPOND | 0 | (overturned) | $0.76 | 100% |
+| `aws/aws-sdk-java-v2` | Java | [#6986](https://github.com/aws/aws-sdk-java-v2/pull/6986) | RESPOND | 3 | BUG, BUG, MISSING_TEST | $0.76 | 0% |
+| `aws/aws-sdk-java-v2` | Java | [#7000](https://github.com/aws/aws-sdk-java-v2/pull/7000) | RESPOND | 0 | (no findings) | $0.23 | n/a |
+| `aws/karpenter-provider-aws` | Go | [#9080](https://github.com/aws/karpenter-provider-aws/pull/9080) | RESPOND | 1 | BUG | $0.51 | 0% |
+| `aws/karpenter-provider-aws` | Go | [#9124](https://github.com/aws/karpenter-provider-aws/pull/9124) | RESPOND | 2 | BUG, MISSING_TEST | $0.87 | 33% |
+| `aws/karpenter-provider-aws` | Go | [#9170](https://github.com/aws/karpenter-provider-aws/pull/9170) | RESPOND | 1 | MISSING_TEST | $0.43 | 50% |
+| `aws/karpenter-provider-aws` | Go | [#9202](https://github.com/aws/karpenter-provider-aws/pull/9202) | RESPOND | 1 | NIT | $0.25 | 0% |
 | `aws-powertools/powertools-lambda-python` | Python | [#8176](https://github.com/aws-powertools/powertools-lambda-python/pull/8176) | RESPOND | 2 | DESIGN, BUG | $0.53 | 0% |
 
-**Totals:** 9 PRs · 15 inline findings · $3.84 total · **mean $0.43/PR** · mean Critic overturn rate 3.7%
+**Totals:** 9 PRs · 11 inline findings · $5.45 total · **mean $0.61/PR** · mean Critic overturn rate ~26%
+
+Each row was a fresh PR (new branch, new PR number) on `c0b4297`, opened to bypass Shadow's existing-feedback dedup. Run artifacts are linked in the [Reproducibility](#reproducibility) section.
+
+### Pre-hardening reference (round-18, May 2026)
+
+Before the round-2/3/4/5 security hardening, the same corpus measured $0.41/PR mean and produced more findings on the borderline PRs (#6936 retry-NPE was 1 BUG at 0% overturn; #7000 netty was 1 BUG at 0% overturn). The ~50% cost shift comes from added Investigator/Critic budget and warning-emit overhead in the hardened pipeline. Findings on the headline bugs (S3 multipart concurrency #6986, nil-deref #9080) reproduce on c0b4297.
+
+| Pre-hardening (round-18) totals | c0b4297 totals |
+|---|---|
+| 9 PRs · 15 findings · $3.84 · $0.41/PR · 3.7% mean overturn | 9 PRs · 11 findings · $5.45 · $0.61/PR · ~26% mean overturn |
 
 ## Reading the table
 

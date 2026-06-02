@@ -31,7 +31,7 @@ This is the gap CodeRabbit missed.
 - `backend/blocks/time_blocks.py:193, 303, 409` — three call sites that read `execution_context.user_timezone`
 - `backend/blocks/time_blocks.py:79-80` — the conditional `if format_type.use_user_timezone and user_timezone:` that branches on the now-default-UTC value
 
-Result: **same root cause as upstream PR #13247 identified, same trigger, same affected files. Found in 1 inline finding, 0% Critic overturn rate, $2.38.**
+Result: **same root cause as upstream PR #13247 identified, same trigger, same affected files. Found in 1 inline finding, 0% Critic overturn rate, $4.79 on `c0b4297` (was $2.38 pre-hardening).**
 
 ### Side-by-side
 
@@ -41,7 +41,7 @@ Result: **same root cause as upstream PR #13247 identified, same trigger, same a
 | Cited the right file? | n/a | `helpers.py:244` (matches PR #13247's fix location exactly) |
 | Cited downstream call sites? | n/a | `time_blocks.py:193, 303, 409` |
 | Identified the divergence path? | n/a | "REST returns correct local time, copilot returns UTC — silent data divergence by invocation path" |
-| Cost (per the bot's metrics) | not disclosed | $2.38 (artifact-stamped) |
+| Cost (per the bot's metrics) | not disclosed | $4.79 (artifact-stamped, c0b4297) |
 
 ### Why the maintainer is the source of truth on this miss
 
@@ -89,7 +89,7 @@ Both bots flagged the same issue; Shadow chose the backend root cause, CR chose 
 
 - **n=2.** This is two PRs on one repo. Don't extrapolate the absolute miss rate.
 - **CodeRabbit's review is free-tier on a public OSS project.** Their paid tier may produce richer output we didn't observe.
-- **Shadow's cost ($2.38, $2.84) is real.** A team that values parsable evidence over assertions will pay it; a team that wants free-tier scan-the-diff coverage may not.
+- **Shadow's cost is real.** Case 1 was $4.79 on `c0b4297` (was $2.38 pre-hardening). A team that values parsable evidence over assertions will pay it; a team that wants free-tier scan-the-diff coverage may not.
 - **Both bots could be wrong.** The maintainer accepted both reviews; the actual production bug-recurrence rate is unknown.
 
 ## Reproducibility

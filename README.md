@@ -11,7 +11,7 @@ Shadow runs a **second agent that has to disprove the first** before anything re
 - ✅ Replies to follow-up comments on issues until you tell it to stop
 - ✅ Optional Slack ping on every escalation
 - ✅ Runs in **your** AWS account — no third-party SaaS, no data leaving your perimeter
-- ✅ ~$0.43/PR mean across 9 OSS PRs in 3 languages ([bench](bench/RESULTS.md))
+- ✅ ~$1.13/PR mean across 9 OSS PRs in 3 languages ([bench](bench/RESULTS.md))
 - ✅ Caught a real bug [CodeRabbit missed on AutoGPT](bench/HEAD_TO_HEAD.md) — same diff, same PR
 
 Apache 2.0. Five lines of YAML to install. No fork required.
@@ -122,7 +122,7 @@ Or reopen an issue, or comment on a tracked issue. Shadow runs.
 
 ## What it costs
 
-**$0.43/PR mean** across the [9-PR bench corpus](bench/RESULTS.md) (range $0.29 to $0.67), measured 2026-05. The deliberately-large head-to-head PR vs CodeRabbit on AutoGPT was $2.38. Observed runs have stayed under $3 on the corpus; an upper-bound run (large PR, max tool calls, full Opus budget) of roughly $5–8 is plausible but unmeasured.
+**$1.13/PR mean** across the [9-PR bench corpus](bench/RESULTS.md) (range $0.23 to $5.23) on the current `c0b4297` revision, measured 2026-06. An earlier round of the same corpus (pre-hardening) ran at **$0.41/PR mean** — the ~2.5× shift comes from added Investigator/Critic budget around the round-2/3/4/5 security hardening (envelope-tag neutralization, sanitizer-marker bypass defenses, config-validation warnings). The deliberately-large head-to-head PR vs CodeRabbit on AutoGPT now runs ~$4.79 (was $2.38). Most PRs stay under $1.50; outliers ($5+) are large-diff or 50%-overturn PRs where the Critic worked hard.
 
 That's higher than single-call review bots in the $0.05–$0.30 range. The cost buys verification: the Critic's job is to **overturn false positives so you don't pay attention to noise**. Most adopters' calculus is "is N false positives more expensive than $3?"
 
