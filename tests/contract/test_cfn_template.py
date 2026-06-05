@@ -41,6 +41,7 @@ def test_template_top_level_shape(doc):
     assert "Description" in doc
     assert set(doc["Resources"].keys()) == {
         "GitHubOidcProvider", "ShadowBotRole", "ShadowMonthlyBudget",
+        "ShadowGuardrail", "ShadowGuardrailVersion",
     }
 
 
@@ -50,14 +51,16 @@ def test_required_parameters_present(doc):
     expected = {"GitHubOrg", "GitHubRepo", "ShadowSourceRepo",
                 "ShadowWorkflowRef", "BedrockRegion",
                 "ExistingOidcProviderArn",
-                "MonthlyBudgetLimit", "BudgetEmailAddress"}
+                "MonthlyBudgetLimit", "BudgetEmailAddress",
+                "ProvisionGuardrail"}
     assert set(doc["Parameters"].keys()) == expected
 
 
 def test_required_outputs_present(doc):
     # README points adopters at these output names.
     expected = {"ShadowRoleArn", "OidcProviderArn", "TrustPolicyScope",
-                "BedrockRegion", "NextSteps"}
+                "BedrockRegion", "NextSteps",
+                "GuardrailId", "GuardrailVersion"}
     assert set(doc["Outputs"].keys()) == expected
 
 
@@ -168,6 +171,73 @@ def test_shadow_source_repo_default_and_threading(doc):
     ]
     assert "${ShadowSourceRepo}" in job_ref
     assert "sudsali/shadow/" not in job_ref
+
+
+def test_guardrail_provisioned_by_default(doc):
+    """ProvisionGuardrail defaults to "true" so adopters get a default
+    Bedrock Guardrail without an explicit opt-in. Flipping this default
+    means new adopters silently lose prompt-injection defense — flag at
+    test time."""
+    assert doc["Parameters"]["ProvisionGuardrail"]["Default"] == "true"
+    assert doc["Conditions"]["CreateGuardrail"]
+
+
+def test_guardrail_blocks_prompt_attack_at_high_strength(doc):
+    """The guardrail's PROMPT_ATTACK input filter is the headline defense
+    against jailbreak / instruction-override attempts. HIGH input strength
+    is the strongest setting; downgrading silently weakens defense."""
+    guardrail = doc["Resources"]["ShadowGuardrail"]["Properties"]
+    filters = guardrail["ContentPolicyConfig"]["FiltersConfig"]
+    prompt_attack = next(f for f in filters if f["Type"] == "PROMPT_ATTACK")
+    assert prompt_attack["InputStrength"] == "HIGH"
+
+
+def test_guardrail_denies_system_prompt_extraction(doc):
+    """The denied-topic list must include attempts to exfiltrate the bot's
+    system prompt — that's the PR-review-bot-specific attack surface."""
+    guardrail = doc["Resources"]["ShadowGuardrail"]["Properties"]
+    topics = guardrail["TopicPolicyConfig"]["TopicsConfig"]
+    names = {t["Name"] for t in topics}
+    assert "SystemPromptExtraction" in names
+    assert "InstructionOverride" in names
+    for topic in topics:
+        assert topic["Type"] == "DENY"
+
+
+def test_guardrail_blocks_aws_keys(doc):
+    """AWS access keys must be blocked at the guardrail layer in addition
+    to the local sanitizer. Belt-and-suspenders: a model paraphrase that
+    elides the literal AKIA prefix could slip past the local regex but
+    not the Bedrock-server-side scanner."""
+    guardrail = doc["Resources"]["ShadowGuardrail"]["Properties"]
+    pii = guardrail["SensitiveInformationPolicyConfig"]["PiiEntitiesConfig"]
+    aws_keys = [p for p in pii if p["Type"] in ("AWS_ACCESS_KEY", "AWS_SECRET_KEY")]
+    assert len(aws_keys) == 2
+    for entry in aws_keys:
+        assert entry["Action"] == "BLOCK"
+
+
+def test_apply_guardrail_permission_granted_when_provisioned(doc):
+    """The role's BedrockInvoke policy must include bedrock:ApplyGuardrail
+    when CreateGuardrail is true — otherwise Converse calls referencing the
+    guardrail get AccessDenied at runtime, breaking every PR review."""
+    role = doc["Resources"]["ShadowBotRole"]["Properties"]
+    bedrock_policy = next(
+        p for p in role["Policies"] if p["PolicyName"] == "BedrockInvoke"
+    )
+    statements = bedrock_policy["PolicyDocument"]["Statement"]
+    # Find the conditional ApplyGuardrail statement (rendered as !If).
+    found = False
+    for s in statements:
+        # When parsed, !If renders as a 3-element sequence; look for a
+        # statement whose Action contains ApplyGuardrail in any branch.
+        if isinstance(s, list):
+            for branch in s:
+                if isinstance(branch, dict) and branch.get("Action") == "bedrock:ApplyGuardrail":
+                    found = True
+        elif isinstance(s, dict) and s.get("Action") == "bedrock:ApplyGuardrail":
+            found = True
+    assert found, "bedrock:ApplyGuardrail permission missing from BedrockInvoke policy"
 
 
 def test_cloudwatch_policy_scoped_to_shadow_namespace(doc):
