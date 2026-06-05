@@ -103,6 +103,7 @@ def test_main_returns_nonzero_on_fails(monkeypatch, capsys):
 def test_main_passes_when_no_fails(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(doctor, "_check_sts_caller", lambda a, r, arn: None)
     monkeypatch.setattr(doctor, "_check_bedrock_access", lambda a, r: None)
+    monkeypatch.setattr(doctor, "_check_guardrail", lambda a, r: None)
     (tmp_path / ".shadow.yml").write_text("codebase:\n  src_dir: .\n")
     rc = doctor.main([
         "--role-arn", "arn:aws:iam::123456789012:role/shadow-bot-ci",
@@ -110,3 +111,74 @@ def test_main_passes_when_no_fails(monkeypatch, tmp_path, capsys):
         "--repo-root", str(tmp_path),
     ])
     assert rc == 0
+
+
+def test_check_guardrail_unset_warns_with_actionable_fix(monkeypatch):
+    """No GUARDRAIL_ID set — doctor must WARN (not fail), and the fix
+    line must mention the CFN GuardrailId output so adopters know where
+    the value comes from."""
+    monkeypatch.delenv("GUARDRAIL_ID", raising=False)
+    r = doctor._Result()
+    doctor._check_guardrail(_Args(region="us-east-1"), r)
+    assert r.warns == 1
+    assert r.fails == 0
+
+
+def test_check_guardrail_set_calls_get_guardrail(monkeypatch):
+    """GUARDRAIL_ID set — doctor must call bedrock:GetGuardrail and PASS
+    when the call succeeds. Mocks boto3 to avoid a live AWS dependency."""
+    monkeypatch.setenv("GUARDRAIL_ID", "gr-abc123")
+    monkeypatch.setenv("GUARDRAIL_VERSION", "1")
+    calls = []
+
+    class _MockBedrock:
+        def get_guardrail(self, **kw):
+            calls.append(kw)
+            return {"name": "shadow-guardrail", "status": "READY"}
+
+    class _MockBoto3:
+        @staticmethod
+        def client(name, region_name):
+            assert name == "bedrock"
+            return _MockBedrock()
+
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "boto3", _MockBoto3)
+    r = doctor._Result()
+    doctor._check_guardrail(_Args(region="us-east-1"), r)
+    assert r.fails == 0
+    assert r.warns == 0
+    # Confirm the call really went through with the configured version.
+    assert calls == [{
+        "guardrailIdentifier": "gr-abc123",
+        "guardrailVersion": "1",
+    }]
+
+
+def test_check_guardrail_failed_get_call_reports_failure(monkeypatch):
+    """If GetGuardrail raises (typo'd ID, missing permission, region
+    mismatch), doctor FAILs with an actionable message naming the three
+    most likely causes — not a generic 'AWS error'."""
+    monkeypatch.setenv("GUARDRAIL_ID", "gr-typo")
+    monkeypatch.delenv("GUARDRAIL_VERSION", raising=False)
+
+    from botocore.exceptions import ClientError
+
+    class _MockBedrock:
+        def get_guardrail(self, **kw):
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException",
+                           "Message": "guardrail not found"}},
+                "GetGuardrail",
+            )
+
+    class _MockBoto3:
+        @staticmethod
+        def client(name, region_name):
+            return _MockBedrock()
+
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "boto3", _MockBoto3)
+    r = doctor._Result()
+    doctor._check_guardrail(_Args(region="us-east-1"), r)
+    assert r.fails == 1

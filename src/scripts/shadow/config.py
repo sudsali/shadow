@@ -75,6 +75,36 @@ class Config:
         self.guardrail_version = os.getenv("GUARDRAIL_VERSION") or "DRAFT"
 
         self.dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
+
+        # Guardrail-required mode. Defaults ON: a production run (DRY_RUN=false)
+        # without GUARDRAIL_ID set is a misconfiguration — the CFN Launch Stack
+        # provisions one by default and outputs the ID; if the adopter skipped
+        # pasting it into a secret, refuse rather than silently run with the
+        # local sanitizer alone. DRY_RUN=true bypasses the check so adopters
+        # can still validate end-to-end without a guardrail in the dry path.
+        # Override BOT_REQUIRE_GUARDRAIL=false to point at a custom hand-built
+        # guardrail provisioned outside the CFN stack and not yet wired in,
+        # OR to deliberately accept the local-sanitizer-only stance for a
+        # specific deployment (not recommended).
+        self.require_guardrail = os.getenv(
+            "BOT_REQUIRE_GUARDRAIL", "true",
+        ).strip().lower() not in ("0", "false", "no", "off")
+        if (
+            self.require_guardrail
+            and not self.dry_run
+            and not self.guardrail_id
+        ):
+            logger.error(
+                "BOT_REQUIRE_GUARDRAIL=true and DRY_RUN=false but GUARDRAIL_ID "
+                "is unset. Production runs require a Bedrock guardrail. The "
+                "CFN Launch Stack provisions one by default and emits "
+                "GuardrailId + GuardrailVersion outputs — paste both into your "
+                "repo secrets (Settings → Secrets and variables → Actions). "
+                "To override (custom guardrail, dry-only fork, etc.), set "
+                "BOT_REQUIRE_GUARDRAIL=false. See "
+                "https://github.com/sudsali/shadow#security-model"
+            )
+            sys.exit(1)
         self.enable_slack = bool(self.slack_webhook_url)
         self.enable_repo_search = os.getenv("ENABLE_REPO_SEARCH", "true").lower() == "true"
 

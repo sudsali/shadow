@@ -155,10 +155,7 @@ Resources:
     Properties:
       Name: !Sub "shadow-bot-guardrail-${GitHubOrg}"
       Description: >-
-        Provisioned by sudsali/shadow CFN template. Default prompt-injection
-        defense for the Shadow PR review bot — blocks system-prompt extraction
-        and instruction-override topics; detects AWS keys + emails leaking
-        into model output.
+        Default prompt-injection defense for sudsali/shadow PR review bot.
       BlockedInputMessaging: >-
         [Shadow] This input was blocked by the bot's Bedrock guardrail
         (prompt-injection scanner). The maintainer has been pinged.

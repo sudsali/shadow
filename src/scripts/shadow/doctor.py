@@ -142,6 +142,58 @@ def _check_bedrock_access(args, result):
         )
 
 
+def _check_guardrail(args, result):
+    """Validate the Bedrock guardrail wiring. The CFN Launch Stack provisions
+    a default guardrail by default (ProvisionGuardrail=true) and emits a
+    GuardrailId + GuardrailVersion output. If GUARDRAIL_ID is unset here, the
+    most likely cause is the adopter forgot to copy the CFN output into a
+    repo secret. We call bedrock:GetGuardrail to confirm the role can read
+    the configured guardrail at the configured version — a cheap server-side
+    check that catches typos + unset versions before a real PR review."""
+    region = args.region or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+    guardrail_id = os.getenv("GUARDRAIL_ID", "").strip()
+    guardrail_version = os.getenv("GUARDRAIL_VERSION", "").strip() or "DRAFT"
+
+    if not guardrail_id:
+        result.warned(
+            "GUARDRAIL_ID is not set; the bot will run without a Bedrock-server-side "
+            "prompt-injection scanner.",
+            f"if you used the CFN Launch Stack, copy the GuardrailId output into a "
+            f"GUARDRAIL_ID repo secret; see {_DOC_BASE}security-model. To intentionally "
+            f"run without a guardrail (DRY runs, custom guardrail wired separately, etc.), "
+            f"set BOT_REQUIRE_GUARDRAIL=false to opt out of the production-mode require check.",
+        )
+        return
+
+    try:
+        import boto3
+        from botocore.exceptions import ClientError, BotoCoreError, NoCredentialsError
+    except ImportError:
+        result.failed("boto3 missing — see prior FAIL.")
+        return
+
+    try:
+        bedrock_admin = boto3.client("bedrock", region_name=region)
+        bedrock_admin.get_guardrail(
+            guardrailIdentifier=guardrail_id,
+            guardrailVersion=guardrail_version,
+        )
+    except (ClientError, BotoCoreError, NoCredentialsError) as e:
+        result.failed(
+            f"Bedrock GetGuardrail failed for {guardrail_id} v{guardrail_version}: "
+            f"{type(e).__name__}",
+            f"verify GUARDRAIL_ID matches the CFN GuardrailId output; verify "
+            f"GUARDRAIL_VERSION matches the GuardrailVersion output (typically a "
+            f"number like '1', not 'DRAFT', after stack publishes the version); "
+            f"verify the role has bedrock:GetGuardrail permission. The CFN template "
+            f"grants this on the provisioned guardrail when ProvisionGuardrail=true.",
+        )
+        return
+    result.passed(
+        f"Bedrock guardrail {guardrail_id} v{guardrail_version} accessible in {region}"
+    )
+
+
 def _check_shadow_yml(args, result):
     repo_root = args.repo_root or os.getenv("SHADOW_REPO_ROOT") or "."
     path = Path(repo_root) / ".shadow.yml"
@@ -225,6 +277,10 @@ def main(argv=None):
 
     print("Bedrock")
     _check_bedrock_access(args, result)
+    print()
+
+    print("Guardrail")
+    _check_guardrail(args, result)
     print()
 
     print("Repo config")

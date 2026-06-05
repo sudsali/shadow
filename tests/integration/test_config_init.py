@@ -14,6 +14,10 @@ REQUIRED_ENV = {
     "EVENT_TYPE": "pull_request_target",
     "ISSUE_NUMBER": "42",
     "GITHUB_REPOSITORY": "owner/repo",
+    # Tests don't set GUARDRAIL_ID; opt out of the production-only require
+    # check so test setup mirrors the non-production path. The require-mode
+    # behavior itself is locked in test_require_guardrail.py.
+    "BOT_REQUIRE_GUARDRAIL": "false",
 }
 
 

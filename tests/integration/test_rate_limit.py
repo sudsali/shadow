@@ -23,6 +23,7 @@ REQUIRED_ENV = {
     "EVENT_TYPE": "pull_request_target",
     "ISSUE_NUMBER": "42",
     "GITHUB_REPOSITORY": "owner/repo",
+    "BOT_REQUIRE_GUARDRAIL": "false",
 }
 
 

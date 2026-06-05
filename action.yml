@@ -1,0 +1,109 @@
+name: "Shadow"
+description: >-
+  Adversarial code-review bot for OSS maintainers, on AWS Bedrock. Three
+  agents (Investigator + Critic + Reporter) split finding generation
+  from falsification — only findings that survive the Critic's disprove
+  pass reach the PR. Calls Bedrock from the adopter's AWS account.
+author: "sudsali"
+branding:
+  icon: "shield"
+  color: "orange"
+
+# Composite-action wrapper around the reusable workflow at
+# .github/workflows/shadow-review.yml. The wrapper only validates inputs
+# and forwards to the reusable workflow; all real work happens there.
+#
+# Adopters can use either shape:
+#   uses: sudsali/shadow@v0
+#     with:
+#       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+# or directly:
+#   uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
+#     secrets:
+#       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+#
+# The composite shape is preferred for Marketplace listing visibility;
+# the workflow_call shape gives finer-grained access (e.g., conditional
+# job-level permissions). Behavior is identical.
+inputs:
+  aws_role_arn:
+    description: >-
+      IAM role ARN with bedrock:Converse permission, OIDC trust pinned to
+      this workflow file via `job_workflow_ref`. Get this from the
+      `ShadowRoleArn` output of the CFN Launch Stack at
+      https://github.com/sudsali/shadow#aws-setup. REQUIRED.
+    required: true
+  guardrail_id:
+    description: >-
+      Bedrock Guardrail ID. Get this from the `GuardrailId` output of the
+      CFN Launch Stack. The CFN provisions a default guardrail; paste its
+      ID here so the bot wires it into every Converse call. Pair with
+      `guardrail_version`. Without these, set BOT_REQUIRE_GUARDRAIL=false
+      via env or the bot will refuse production runs.
+    required: false
+    default: ""
+  guardrail_version:
+    description: >-
+      Bedrock Guardrail version. Get this from the `GuardrailVersion`
+      output of the CFN Launch Stack (typically a number like `1`).
+      Required if `guardrail_id` is set.
+    required: false
+    default: ""
+  pr_number:
+    description: PR or issue number to review (workflow_dispatch only).
+    required: false
+    default: ""
+  dry_run:
+    description: >-
+      When `true`, writes the artifact but doesn't post comments.
+      Bypasses the BOT_REQUIRE_GUARDRAIL check.
+    required: false
+    default: "false"
+  shadow_ref:
+    description: Pin to a Shadow release (`v0` or a 40-char SHA).
+    required: false
+    default: "v0"
+
+outputs:
+  shadow_result:
+    description: >-
+      Path to the shadow_result.json artifact written by the analyze job.
+      The artifact is also uploaded under name `shadow-result` for download
+      via gh run download.
+    value: ${{ steps.run.outputs.artifact_path }}
+
+# Composite actions cannot directly invoke a `workflow_call` workflow
+# from another repo — that's a workflow-level operation. This composite
+# is a stub for Marketplace listing only; for actual orchestration the
+# adopter still uses the reusable workflow shape:
+#
+#   jobs:
+#     shadow:
+#       uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
+#
+# When GitHub Actions adds composite-to-reusable-workflow chaining
+# (https://github.com/orgs/community/discussions/56086), this file flips
+# from stub to real wrapper. Until then, this exists so:
+#   1. Marketplace search finds Shadow
+#   2. `uses: sudsali/shadow@v0` doesn't 404
+#   3. The branding badge renders on PRs
+runs:
+  using: "composite"
+  steps:
+    - name: Direct adopters to the reusable-workflow shape
+      shell: bash
+      run: |
+        cat <<EOF
+        Shadow is invoked via a reusable workflow, not a composite action.
+        Update your caller workflow to:
+        jobs:
+          shadow:
+            uses: sudsali/shadow/.github/workflows/shadow-review.yml@${{ inputs.shadow_ref }}
+            secrets:
+              AWS_ROLE_ARN: \${{ secrets.AWS_ROLE_ARN }}
+              GUARDRAIL_ID: \${{ secrets.GUARDRAIL_ID }}
+              GUARDRAIL_VERSION: \${{ secrets.GUARDRAIL_VERSION }}
+        See https://github.com/sudsali/shadow#install-5-minutes for the
+        full caller-workflow template.
+        EOF
+        exit 1
