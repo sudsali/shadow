@@ -197,6 +197,10 @@ jobs:
           ARTIFACT_PATH: ${{ runner.temp }}/shadow_result.json
           # act() also reads .shadow.yml for bot_name etc.
           SHADOW_REPO_ROOT: ${{ github.workspace }}
+          # Config()'s guardrail gate runs in both jobs; act() needs the
+          # same env as analyze() or the gate exits 1.
+          GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
+          GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
         run: |
           cd shadow-bot-runtime
           PYTHONPATH=src/scripts python -m shadow.main act

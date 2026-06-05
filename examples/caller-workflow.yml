@@ -54,12 +54,14 @@ jobs:
       # critic_max_tool_calls: "4"
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      # Provisioned by the CFN Launch Stack. Required unless
+      # BOT_REQUIRE_GUARDRAIL=false.
+      GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
+      GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
       # Optional Bedrock overrides — leave commented to use defaults.
       # BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
       # BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID }}
       # BEDROCK_CRITIC_MODEL_ID: ${{ secrets.BEDROCK_CRITIC_MODEL_ID }}
-      # GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
-      # GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
       # KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
       # KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
       # SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
