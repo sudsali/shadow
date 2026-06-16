@@ -107,7 +107,11 @@ jobs:
     uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
+      GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
 ```
+
+`GUARDRAIL_ID`/`GUARDRAIL_VERSION` are provisioned by the Launch Stack and required for production runs (`DRY_RUN=false`) unless you pass `require_guardrail: 'false'` under `with:` — see [step 3](#3-aws-role--guardrail--three-repo-secrets) and [Security model](#security-model).
 
 ### 2. Config — `.shadow.yml` at repo root
 
@@ -118,9 +122,17 @@ codebase:
   src_dir: src/    # required — your primary source directory
 ```
 
-### 3. AWS role — `AWS_ROLE_ARN` secret
+### 3. AWS role + guardrail — three repo secrets
 
-[Click the Launch Stack button](#aws-setup) (one click), or [follow the manual setup](#manual-setup-alternative). Either way you end up with a `arn:aws:iam::...:role/shadow-bot-ci` to paste into your repo's `AWS_ROLE_ARN` secret (Settings → Secrets and variables → Actions).
+[Click the Launch Stack button](#aws-setup) (one click), or [follow the manual setup](#manual-setup-alternative). The stack emits three outputs to paste into repo secrets (Settings → Secrets and variables → Actions):
+
+| Stack output | Repo secret | Required? |
+|---|---|---|
+| `ShadowRoleArn` (`arn:aws:iam::...:role/shadow-bot-ci`) | `AWS_ROLE_ARN` | Always |
+| `GuardrailId` | `GUARDRAIL_ID` | Production runs (default `ProvisionGuardrail=true`) |
+| `GuardrailVersion` | `GUARDRAIL_VERSION` | Production runs |
+
+A production run (`DRY_RUN=false`) with `GUARDRAIL_ID` unset is refused at load time — Shadow won't run without prompt-injection defense. To opt out (e.g. a custom guardrail, or a dry-run-only fork), pass `require_guardrail: 'false'` under the caller's `with:` block. See [Security model](#security-model).
 
 ### 4. Open a PR
 
@@ -200,11 +212,12 @@ models:
 | `BOT_MAX_RUNS_PER_HOUR` | `20` | Per-(repo, item) hourly run cap. `0` disables. Capped at `100`; values above clamp with a warning. Negative values fall back to default. Hit → ESCALATE with `shadow:rate-limited` label. |
 | `BOT_MAX_REPLIES` | `2` | Followup-reply cap per (issue, PR). Capped at `100`; negative falls back to default. |
 | `BOT_GITHUB_ACTOR` | `github-actions[bot]` | GitHub login Shadow's comments appear under. **Set this to a unique value** if your repo has other workflows that also post as `github-actions[bot]` (e.g., PR-overlap detectors, claim-checkers). Otherwise Shadow's `already_commented` dedup matches their comments and silently SKIPs every PR. |
-| `DRY_RUN` | `false` | When `true`, Shadow writes the artifact but doesn't post comments. |
+| `BOT_REQUIRE_GUARDRAIL` | `true` | Production runs (`DRY_RUN=false`) refuse to start when `GUARDRAIL_ID` is unset — Shadow won't run without prompt-injection defense. On the reusable workflow, drive this via the `require_guardrail` **input** (`with: require_guardrail: 'false'`) — accepts `0`/`false`/`no`/`off`. `DRY_RUN=true` bypasses the gate regardless. |
+| `DRY_RUN` | `false` | When `true`, Shadow writes the artifact but doesn't post comments. Bypasses the `BOT_REQUIRE_GUARDRAIL` gate. |
 | `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-7` | Investigator model. |
 | `BEDROCK_REPORTER_MODEL_ID` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Reporter model. Default is Haiku because Bedrock's `outputConfig.textFormat` is Haiku-only over Converse today; Opus 4.7 rejects it. |
 | `BEDROCK_CRITIC_MODEL_ID` | falls back to `BEDROCK_MODEL_ID` | Critic model. |
-| `GUARDRAIL_ID` / `GUARDRAIL_VERSION` | unset | Bedrock Guardrail ID + version. **The CFN Launch Stack provisions one by default**; copy the `GuardrailId`/`GuardrailVersion` outputs into these repo secrets after stack deploy. Without them set, the bot still works but skips the server-side prompt-injection scanner — local sanitizer + prompt constraints are the fallback. |
+| `GUARDRAIL_ID` / `GUARDRAIL_VERSION` | unset | Bedrock Guardrail ID + version. **The CFN Launch Stack provisions one by default**; copy the `GuardrailId`/`GuardrailVersion` outputs into these repo secrets after stack deploy. **Required for production runs** — with `require_guardrail` defaulting to `true`, a `DRY_RUN=false` run refuses to start when these are unset (pass `require_guardrail: 'false'` under `with:` to opt out). When set, the guardrail wraps every Converse call as a server-side prompt-injection scanner on top of the local sanitizer + prompt constraints. |
 | `KB_S3_BUCKET` / `KB_S3_KEY` | unset | Optional S3-hosted knowledge base appended to the Investigator's system prompt. Useful for project-specific conventions. The IAM role needs `s3:GetObject` on that bucket; CFN doesn't grant this — extend the role yourself. |
 | `SLACK_WEBHOOK_URL` | unset | Slack channel webhook for escalation pings. Set to a [Slack incoming webhook URL](https://api.slack.com/messaging/webhooks); the bot posts a one-line summary to that channel on every ESCALATE. |
 | `SHADOW_DISABLED` | unset | Set as a repo or org **variable** (Settings → Variables, NOT Secrets) to fleet-wide-disable. |
@@ -283,20 +296,28 @@ If you prefer not to run CloudFormation:
    ```
    Replace `ACCT` with your account ID and `YOUR_ORG/YOUR_REPO` with your GitHub repo. **If you forked Shadow**, replace `sudsali/shadow` in `job_workflow_ref` with your fork. The two `StringLike` claims combine with **AND**: `sub` limits which repo can assume the role; `job_workflow_ref` pins to Shadow's workflow file. For monorepo installs use `repo:YOUR_ORG/*:*` only if you've audited every repo.
 
-   Permission policy. Replace `REGION` with your Bedrock region (`us-east-1`, `us-west-2`, etc.). For multi-region setups add a Statement per region — Bedrock ARNs are region-scoped:
+   Permission policy. Replace `REGION` with your Bedrock region (`us-east-1`, `us-west-2`, etc.). For multi-region setups add a Statement per region — Bedrock ARNs are region-scoped. The second statement is only needed if you set a `GUARDRAIL_ID` (the default production path); scope it to your guardrail's ARN:
    ```json
    {
      "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Action": ["bedrock:InvokeModel", "bedrock:Converse", "bedrock:InvokeModelWithResponseStream"],
-       "Resource": [
-         "arn:aws:bedrock:REGION::foundation-model/anthropic.*",
-         "arn:aws:bedrock:REGION:*:inference-profile/us.anthropic.*"
-       ]
-     }]
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": ["bedrock:InvokeModel", "bedrock:Converse", "bedrock:InvokeModelWithResponseStream"],
+         "Resource": [
+           "arn:aws:bedrock:REGION::foundation-model/anthropic.*",
+           "arn:aws:bedrock:REGION:*:inference-profile/us.anthropic.*"
+         ]
+       },
+       {
+         "Effect": "Allow",
+         "Action": "bedrock:ApplyGuardrail",
+         "Resource": "arn:aws:bedrock:REGION:ACCT:guardrail/YOUR_GUARDRAIL_ID"
+       }
+     ]
    }
    ```
+   The Launch Stack adds the `bedrock:ApplyGuardrail` statement automatically when `ProvisionGuardrail=true`; manual-setup adopters must add it themselves, or production runs hit `AccessDeniedException` on the guardrail-wrapped Converse call.
 
 4. **Set `AWS_ROLE_ARN` repo secret** to the role's ARN (e.g., `arn:aws:iam::123456789012:role/shadow-bot-ci`).
 
@@ -376,6 +397,8 @@ If you previously tried to set `SHADOW_DISABLED` as a Secret rather than a Varia
 | `Could not assume role` from configure-aws-credentials | OIDC trust policy mismatch | Verify `sub` matches `repo:YOUR_ORG/YOUR_REPO:*` and `job_workflow_ref` includes the Shadow workflow path. Run `aws sts get-caller-identity` from a minimal workflow first. |
 | `AccessDeniedException` on Bedrock | Model access not enabled in region | AWS Console → Bedrock → Model access → enable Opus 4.7 + Haiku 4.5. |
 | `ValidationException` on Bedrock call | Wrong model ID format | Check `BEDROCK_MODEL_ID` is `us.anthropic.claude-opus-4-7` (no `-v1` suffix on 4.7). |
+| `BOT_REQUIRE_GUARDRAIL=true and DRY_RUN=false but GUARDRAIL_ID is unset`, run exits 1 | Production run started without a guardrail wired in | Paste the stack's `GuardrailId`/`GuardrailVersion` outputs into the `GUARDRAIL_ID`/`GUARDRAIL_VERSION` repo secrets and forward them in the caller workflow's `secrets:`. To run without one, pass `require_guardrail: 'false'` under `with:`. |
+| `AccessDeniedException` on `bedrock:ApplyGuardrail` | IAM role lacks `bedrock:ApplyGuardrail` for the configured guardrail | Manual-setup only — add the `bedrock:ApplyGuardrail` statement scoped to your guardrail ARN (see [Manual setup](#manual-setup-alternative)). The Launch Stack grants it automatically. |
 | `Required prompt missing: prompts/pr-investigator.txt` | `@v0` (or pinned SHA) doesn't include `prompts/` | Verify the ref in `sudsali/shadow` includes the `prompts/` directory. If you forked, ensure your tag does too. |
 | No comments posted, workflow green | `dry_run: true` | Set `dry_run: false` in caller-workflow inputs. |
 | Every PR escalates with `prompt_load_failed` | `prompts/` not present at the pinned `shadow_ref` | Same as above. |

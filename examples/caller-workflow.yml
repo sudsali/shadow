@@ -52,10 +52,13 @@ jobs:
       # numbers cap Bedrock spend at the cost of review depth.
       # investigator_max_tool_calls: "5"
       # critic_max_tool_calls: "4"
+      # Guardrail gate — defaults to 'true' (production runs refuse to start
+      # without GUARDRAIL_ID). Uncomment to run without a guardrail.
+      # require_guardrail: "false"
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       # Provisioned by the CFN Launch Stack. Required unless
-      # BOT_REQUIRE_GUARDRAIL=false.
+      # require_guardrail is set to "false" above.
       GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
       GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
       # Optional Bedrock overrides — leave commented to use defaults.

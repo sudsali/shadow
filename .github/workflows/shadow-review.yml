@@ -31,6 +31,10 @@ on:
         type: string
         default: "8"
         description: "Cost cap on the disprove pass."
+      require_guardrail:
+        type: string
+        default: "true"
+        description: "Refuse production runs (dry_run=false) without a guardrail. Set 'false' to opt out (custom guardrail, or local-sanitizer-only)."
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -128,6 +132,7 @@ jobs:
           BOT_AGENT_PIPELINE: "1"
           BOT_INVESTIGATOR_MAX_TOOL_CALLS: ${{ inputs.investigator_max_tool_calls }}
           BOT_CRITIC_MAX_TOOL_CALLS: ${{ inputs.critic_max_tool_calls }}
+          BOT_REQUIRE_GUARDRAIL: ${{ inputs.require_guardrail }}
           DRY_RUN: ${{ inputs.dry_run }}
           ARTIFACT_PATH: ${{ runner.temp }}/shadow_result.json
           # Audit anchor — what shadow_ref this run pinned. GITHUB_SHA is the
@@ -198,9 +203,10 @@ jobs:
           # act() also reads .shadow.yml for bot_name etc.
           SHADOW_REPO_ROOT: ${{ github.workspace }}
           # Config()'s guardrail gate runs in both jobs; act() needs the
-          # same env as analyze() or the gate exits 1.
+          # same guardrail env as analyze() or the gate exits 1.
           GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
           GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
+          BOT_REQUIRE_GUARDRAIL: ${{ inputs.require_guardrail }}
         run: |
           cd shadow-bot-runtime
           PYTHONPATH=src/scripts python -m shadow.main act
