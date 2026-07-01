@@ -35,6 +35,24 @@ on:
         type: string
         default: "true"
         description: "Refuse production runs (dry_run=false) without a guardrail. Set 'false' to opt out (custom guardrail, or local-sanitizer-only)."
+      aws_region:
+        type: string
+        default: "us-east-1"
+        description: >-
+          Region for all AWS calls (Bedrock, the guardrail, and any
+          Secrets-Manager-backed prompts). MUST match where you enabled Bedrock
+          model access and provisioned the guardrail/prompt secrets. Defaults to
+          us-east-1; set to your CFN BedrockRegion (us-west-2 / us-east-2 / ...).
+      prompt_sm_prefix:
+        type: string
+        default: ""
+        description: >-
+          Optional. Bring-your-own prompts: a Secrets Manager namespace (e.g.
+          'my-bot') holding <prefix>/pr-investigator-prompt, /pr-critic-prompt,
+          /pr-reporter-prompt, /pr-investigator-commit-prompt, /pr-critic-commit-prompt.
+          When set, the engine loads these instead of its bundled
+          language-agnostic prompts. Leave empty to use the bundled defaults.
+          The IAM role must allow secretsmanager:GetSecretValue on those secrets.
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -111,7 +129,10 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: shadow-${{ github.run_id }}-${{ github.run_attempt }}
-          aws-region: us-east-1
+          # v5 exports AWS_REGION/AWS_DEFAULT_REGION into the job env, so the
+          # engine's Bedrock + Secrets Manager clients inherit this region. Must
+          # match the CFN BedrockRegion where model access + secrets live.
+          aws-region: ${{ inputs.aws_region }}
 
       - name: Run analysis
         env:
@@ -133,6 +154,14 @@ jobs:
           BOT_INVESTIGATOR_MAX_TOOL_CALLS: ${{ inputs.investigator_max_tool_calls }}
           BOT_CRITIC_MAX_TOOL_CALLS: ${{ inputs.critic_max_tool_calls }}
           BOT_REQUIRE_GUARDRAIL: ${{ inputs.require_guardrail }}
+          # Bring-your-own prompts (opt-in): each SM_*_PROMPT names a Secrets
+          # Manager secret the engine fetches in place of its bundled default.
+          # The guard yields '' when the prefix is unset (empty = use bundled).
+          SM_PR_INVESTIGATOR_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-investigator-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_PR_CRITIC_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-critic-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_PR_REPORTER_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-reporter-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_PR_INVESTIGATOR_COMMIT_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-investigator-commit-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_PR_CRITIC_COMMIT_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-critic-commit-prompt', inputs.prompt_sm_prefix) || '' }}
           DRY_RUN: ${{ inputs.dry_run }}
           ARTIFACT_PATH: ${{ runner.temp }}/shadow_result.json
           # Audit anchor — what shadow_ref this run pinned. GITHUB_SHA is the

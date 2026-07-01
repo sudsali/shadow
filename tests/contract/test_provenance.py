@@ -7,6 +7,19 @@ import pytest
 from shadow.prompts import compute_prompt_provenance
 
 
+@pytest.fixture(autouse=True)
+def _isolate_prompt_env(monkeypatch):
+    """Keep provenance offline+deterministic: clear any SM_*_PROMPT the ambient
+    environment may export, so _resolve_prompt never issues a Secrets Manager
+    network call from these pure-hashing contract tests."""
+    for var in (
+        "PR_INVESTIGATOR_PROMPT", "PR_CRITIC_PROMPT", "PR_REPORTER_PROMPT",
+        "PR_INVESTIGATOR_COMMIT_PROMPT", "PR_CRITIC_COMMIT_PROMPT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(f"SM_{var}", raising=False)
+
+
 def test_provenance_has_rollup_and_prompts():
     p = compute_prompt_provenance()
     assert isinstance(p["rollup_sha256"], str) and len(p["rollup_sha256"]) == 64

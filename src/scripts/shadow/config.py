@@ -159,7 +159,7 @@ class Config:
         ), "github-actions[bot]")
         # After this many bot replies on one issue/PR, the next user comment
         # escalates instead of triggering another reply. Anti-abuse + cost
-        # control. Default 2 matches the original deequ-bot tuning.
+        # control.
         self.max_bot_replies = _int_in_range_or_default(shadow_config.env_or(
             "BOT_MAX_REPLIES",
             shadow_config.get(yml, "bot", "max_replies"),

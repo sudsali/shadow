@@ -246,16 +246,43 @@ def _check_prompts_loadable(args, result):
         from shadow import prompts
     prov = prompts.compute_prompt_provenance()
     missing = [p for p in prov["prompts"] if not p["loaded"]]
-    if not missing:
-        result.passed(
-            f"all 5 pipeline prompts loaded (rollup {prov['rollup_sha256'][:16]}...)"
+    if missing:
+        names = [p["stage"] for p in missing]
+        result.failed(
+            f"prompt files missing or unreadable: {names}",
+            f"verify the shadow_ref pin includes prompts/ directory; see {_DOC_BASE}troubleshooting",
         )
         return
-    names = [p["stage"] for p in missing]
-    result.failed(
-        f"prompt files missing or unreadable: {names}",
-        f"verify the shadow_ref pin includes prompts/ directory; see {_DOC_BASE}troubleshooting",
+    # Silent-misconfig guard: a stage whose SM_<var> is configured but whose
+    # resolved source is a disk file means the SM fetch missed and a commit
+    # prompt silently fell back to the bundled default — the adopter believes
+    # their custom prompt is live when it is not. Loaded=True hides this, so
+    # inspect the source label against the configured SM_* env vars.
+    fell_back = [
+        (stage, env_var)
+        for stage, env_var, _filename, _fb in prompts._ACTIVE_PROMPTS
+        if os.getenv(f"SM_{env_var}", "").strip()
+        and _stage_source(prov, stage).startswith("file:")
+    ]
+    if fell_back:
+        stages = [s for s, _ in fell_back]
+        result.warned(
+            f"SM prompt(s) configured but fell back to bundled defaults: {stages} "
+            "(SM secret missing/unreadable/wrong-region — the custom prompt is NOT active)",
+            "verify the secret names exist and the IAM role allows "
+            f"secretsmanager:GetSecretValue in this region; see {_DOC_BASE}troubleshooting",
+        )
+        return
+    result.passed(
+        f"all 5 pipeline prompts loaded (rollup {prov['rollup_sha256'][:16]}...)"
     )
+
+
+def _stage_source(prov, stage):
+    for entry in prov["prompts"]:
+        if entry["stage"] == stage:
+            return entry.get("source", "")
+    return ""
 
 
 def main(argv=None):

@@ -90,6 +90,45 @@ def test_check_prompts_loadable_passes_in_repo():
     r = doctor._Result()
     doctor._check_prompts_loadable(_Args(), r)
     assert r.fails == 0
+    assert r.warns == 0
+
+
+def test_check_prompts_warns_on_silent_sm_fallback(monkeypatch):
+    # S1 regression: an SM-configured commit prompt whose secret MISSES silently
+    # falls back to the bundled disk default (loaded=True). The doctor must WARN
+    # — a green check here would certify a misconfigured BYO setup as healthy.
+    from shadow import prompts
+    monkeypatch.setattr(prompts, "_read_from_sm", lambda name: "")  # every SM miss
+    monkeypatch.setenv("SM_PR_CRITIC_COMMIT_PROMPT", "my-bot/pr-critic-commit-prompt")
+    r = doctor._Result()
+    doctor._check_prompts_loadable(_Args(), r)
+    assert r.fails == 0          # commit prompt still loads (disk fallback)
+    assert r.warns == 1          # but the doctor flags the silent fallback
+
+
+def test_check_prompts_no_warn_when_sm_hits(monkeypatch):
+    # Contrast: SM configured AND hits → source is sm:, no warn.
+    from shadow import prompts
+    monkeypatch.setattr(prompts, "_read_from_sm", lambda name: "CUSTOM COMMIT")
+    monkeypatch.setenv("SM_PR_CRITIC_COMMIT_PROMPT", "my-bot/pr-critic-commit-prompt")
+    r = doctor._Result()
+    doctor._check_prompts_loadable(_Args(), r)
+    assert r.fails == 0 and r.warns == 0
+
+
+def test_check_prompts_warns_lists_all_fallen_back_stages(monkeypatch, capsys):
+    # Multi-stage: BOTH commit prompts configured-but-missing must both appear
+    # in the single WARN — guards against a regression that reports only the
+    # first fallen-back stage.
+    from shadow import prompts
+    monkeypatch.setattr(prompts, "_read_from_sm", lambda name: "")  # all miss
+    monkeypatch.setenv("SM_PR_INVESTIGATOR_COMMIT_PROMPT", "my-bot/pr-investigator-commit-prompt")
+    monkeypatch.setenv("SM_PR_CRITIC_COMMIT_PROMPT", "my-bot/pr-critic-commit-prompt")
+    r = doctor._Result()
+    doctor._check_prompts_loadable(_Args(), r)
+    assert r.fails == 0 and r.warns == 1
+    out = capsys.readouterr().out
+    assert "investigator_commit" in out and "critic_commit" in out
 
 
 def test_main_returns_nonzero_on_fails(monkeypatch, capsys):

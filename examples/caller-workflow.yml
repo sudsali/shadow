@@ -55,6 +55,15 @@ jobs:
       # Guardrail gate — defaults to 'true' (production runs refuse to start
       # without GUARDRAIL_ID). Uncomment to run without a guardrail.
       # require_guardrail: "false"
+      # Region for all AWS calls (Bedrock, guardrail, prompt secrets). Defaults
+      # to us-east-1; set to your CFN BedrockRegion if you deployed elsewhere.
+      # aws_region: "us-west-2"
+      # Bring-your-own prompts (optional): a Secrets Manager namespace holding
+      # <prefix>/pr-investigator-prompt, /pr-critic-prompt, /pr-reporter-prompt,
+      # /pr-investigator-commit-prompt, /pr-critic-commit-prompt. Leave unset to
+      # use Shadow's bundled defaults. Role needs secretsmanager:GetSecretValue
+      # on <prefix>/pr-*-prompt. See README "Bring-your-own prompts".
+      # prompt_sm_prefix: "my-bot"
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       # Provisioned by the CFN Launch Stack. Required unless
