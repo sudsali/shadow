@@ -262,10 +262,14 @@ class _FakeGHAct:
     def __init__(self):
         self.comments = []
         self.labels = []
+        self.reviews = []
     def post_comment(self, number, body):
         self.comments.append((number, body)); return True
     def add_labels(self, number, labels):
         self.labels.append((number, labels)); return True
+    def post_pr_review(self, number, summary, inline_comments, event="COMMENT", commit_id=""):
+        self.reviews.append({"number": number, "commit_id": commit_id,
+                             "summary": summary}); return True
 
 
 class _FailingSlack:
@@ -317,3 +321,80 @@ def test_act_escalate_emits_slack_failure_metric(monkeypatch, tmp_path):
     assert len(slack_emits) == 1
     assert slack_emits[0]["slack_failure_count"] == 1
     assert slack_emits[0]["pipeline"] == "issue"
+
+
+def test_act_clean_pr_review_pins_commit_id(monkeypatch, tmp_path):
+    # A clean PR RESPOND artifact carries head_sha; act() must pin the posted
+    # review to that exact commit (so an auto-approve gate keying on the
+    # review's commit_id sees the analyzed SHA, not a moved head).
+    sha = "d70885e0befc1f30eb77620fd563376093e85cea"
+    artifact = {
+        "action": "RESPOND", "labels": [],
+        "response": "No issues found.\n<!-- deequ-bot:clean -->",
+        "inline_comments": [],
+        "title": "t", "html_url": "https://github.com/owner/repo/pull/722",
+        "number": 722, "is_pr": True, "prompt_id": "abc",
+        "model_id": "us.anthropic.claude-opus-4-7",
+        "head_sha": sha,
+    }
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(artifact))
+    monkeypatch.setattr(main_mod, "ARTIFACT_PATH", str(path))
+    monkeypatch.setenv("ARTIFACT_PATH", str(path))
+    monkeypatch.setenv("GITHUB_TOKEN", "fake")
+    monkeypatch.setenv("EVENT_TYPE", "pull_request_target")
+    monkeypatch.setenv("EVENT_ACTION", "opened")
+    monkeypatch.setenv("ISSUE_NUMBER", "722")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("BOT_REQUIRE_GUARDRAIL", "false")
+    monkeypatch.setenv("SHADOW_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("SHADOW_VERIFY_ARTIFACT", "false")
+    monkeypatch.setenv("SHADOW_CLOUDWATCH_DISABLED", "true")
+
+    gh = _FakeGHAct()
+    monkeypatch.setattr(main_mod, "GitHubClient", lambda cfg: gh)
+    monkeypatch.setattr(main_mod, "SlackClient", lambda cfg: _FailingSlack(cfg))
+
+    main_mod.act()
+
+    assert len(gh.reviews) == 1
+    assert gh.reviews[0]["commit_id"] == sha
+    assert "deequ-bot:clean" in gh.reviews[0]["summary"]
+
+
+@pytest.mark.parametrize("bad_head_sha", [None, 12345, ["x"], {"a": 1}, True])
+def test_act_corrupted_head_sha_degrades_safely(monkeypatch, tmp_path, bad_head_sha):
+    # A tampered/corrupted artifact with a non-str head_sha must NOT crash act();
+    # it coerces to "" so commit_id is omitted (GitHub uses current head — the
+    # prior behavior), and the review still posts.
+    artifact = {
+        "action": "RESPOND", "labels": [],
+        "response": "No issues found.\n<!-- deequ-bot:clean -->",
+        "inline_comments": [],
+        "title": "t", "html_url": "https://github.com/owner/repo/pull/9",
+        "number": 9, "is_pr": True, "prompt_id": "abc",
+        "model_id": "us.anthropic.claude-opus-4-7",
+        "head_sha": bad_head_sha,
+    }
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(artifact))
+    monkeypatch.setattr(main_mod, "ARTIFACT_PATH", str(path))
+    monkeypatch.setenv("ARTIFACT_PATH", str(path))
+    monkeypatch.setenv("GITHUB_TOKEN", "fake")
+    monkeypatch.setenv("EVENT_TYPE", "pull_request_target")
+    monkeypatch.setenv("EVENT_ACTION", "opened")
+    monkeypatch.setenv("ISSUE_NUMBER", "9")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("BOT_REQUIRE_GUARDRAIL", "false")
+    monkeypatch.setenv("SHADOW_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("SHADOW_VERIFY_ARTIFACT", "false")
+    monkeypatch.setenv("SHADOW_CLOUDWATCH_DISABLED", "true")
+
+    gh = _FakeGHAct()
+    monkeypatch.setattr(main_mod, "GitHubClient", lambda cfg: gh)
+    monkeypatch.setattr(main_mod, "SlackClient", lambda cfg: _FailingSlack(cfg))
+
+    main_mod.act()   # must not raise
+
+    assert len(gh.reviews) == 1
+    assert gh.reviews[0]["commit_id"] == ""   # corrupted → omitted, safe fallback

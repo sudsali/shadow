@@ -378,9 +378,12 @@ class GitHubClient:
         body = _truncate_comment_body(body)
         return self._post(f"/repos/{self._repo}/issues/{number}/comments", {"body": body})
 
-    def post_pr_review(self, number, summary, inline_comments, event="COMMENT"):
+    def post_pr_review(self, number, summary, inline_comments, event="COMMENT",
+                       commit_id=""):
         if self._dry_run:
-            logger.info(f"[DRY RUN] PR review on #{number}: {len(inline_comments)} inline comments, event={event}")
+            logger.info(
+                "[DRY RUN] PR review on #%s: %d inline comments, event=%s, commit_id=%s",
+                number, len(inline_comments), event, commit_id or "(current head)")
             return True
 
         # Get valid diff lines per file from the PR
@@ -412,6 +415,17 @@ class GitHubClient:
         ]
 
         payload = {"body": body, "event": event}
+        # Pin the review to the exact commit that was analyzed. Without commit_id,
+        # GitHub stamps the review with the PR's current head at post time — so a
+        # push landing between analyze and act would attach a review (computed
+        # against the old code) to the new head. Downstream automation keying on
+        # review.commit_id (e.g. an auto-approve gate that requires the review's
+        # commit to equal the tip) then behaves on a mismatched pairing. Sending
+        # the analyzed SHA keeps the review honestly bound to what it reviewed;
+        # if head has moved on, such a gate correctly declines rather than
+        # approving stale analysis.
+        if commit_id:
+            payload["commit_id"] = commit_id
         if valid_comments:
             payload["comments"] = valid_comments
 

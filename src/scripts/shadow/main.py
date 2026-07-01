@@ -456,6 +456,13 @@ def act():
     if not isinstance(raw_labels, list):
         raw_labels = []
     labels = [l for l in raw_labels if isinstance(l, str) and l in cfg.allowed_labels]
+    # Analyzed commit, used to pin the posted review to what was reviewed.
+    # Coerce to str: a non-str value would be rejected by the GitHub API, and
+    # "" simply omits commit_id (GitHub falls back to current head — the prior
+    # behavior), so a corrupted field degrades safely rather than crashing.
+    head_sha = result.get("head_sha", "")
+    if not isinstance(head_sha, str):
+        head_sha = ""
     response = result.get("response", "")
     prompt_id = result.get("prompt_id", "unknown")
     model_id = result.get("model_id", "unknown")
@@ -506,10 +513,12 @@ def act():
         posted_status = {"comment": None, "labels": None}
         if is_pr and inline_comments:
             posted_status["comment"] = bool(gh.post_pr_review(
-                number, response + footer, inline_comments, event="COMMENT"))
+                number, response + footer, inline_comments, event="COMMENT",
+                commit_id=head_sha))
         elif is_pr and response and not inline_comments:
             posted_status["comment"] = bool(gh.post_pr_review(
-                number, response + footer, [], event="COMMENT"))
+                number, response + footer, [], event="COMMENT",
+                commit_id=head_sha))
         elif not response and not inline_comments:
             logger.info(f"Skip #{number}: nothing to post after sanitization")
         else:
@@ -1330,6 +1339,9 @@ def _run_agent_pipeline(*, cfg, gh, bedrock, number, title, body, html_url, item
         cfg=cfg, title=title, html_url=html_url, number=number,
         inv_tmpl=investigator_tmpl, critic_tmpl=critic_tmpl, reporter_tmpl=reporter_tmpl,
         is_incremental=bool(incremental_diff),
+        # The analyzed commit. Carried into the artifact so act() can pin the
+        # posted review to exactly this SHA (not the PR head at post time).
+        head_sha=head_sha,
     )
 
     if not inv_result.text:
@@ -1932,7 +1944,8 @@ def _parse_reporter_output(raw):
 def _write_artifact_pipeline(*, cfg, action, reason, title, html_url, number,
                               inv_tmpl, critic_tmpl, reporter_tmpl,
                               inline_comments, response, is_incremental,
-                              metrics, tool_trace, investigator_summary=None):
+                              metrics, tool_trace, investigator_summary=None,
+                              head_sha=""):
     """Write the analyze artifact for a pipeline run, including per-stage
     metrics, tool trace, and (on escalate) the investigator's narrative."""
     artifact = {
@@ -1942,6 +1955,8 @@ def _write_artifact_pipeline(*, cfg, action, reason, title, html_url, number,
         "inline_comments": inline_comments,
         "title": title, "html_url": html_url, "number": number,
         "is_pr": True, "is_incremental": is_incremental,
+        # Analyzed commit; act() pins the posted review to this exact SHA.
+        "head_sha": head_sha,
         "prompt_id": prompts.prompt_version(inv_tmpl) if inv_tmpl else "n/a",
         "prompt_ids": {
             "investigator": prompts.prompt_version(inv_tmpl) if inv_tmpl else "n/a",
