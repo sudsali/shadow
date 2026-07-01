@@ -308,3 +308,62 @@ def test_provenance_labels_sm_source(monkeypatch):
     critic = next(e for e in prov["prompts"] if e["stage"] == "critic")
     assert critic["source"] == "sm:deequ-bot/pr-critic-prompt"
     assert critic["loaded"] is True
+
+
+# --- Issue / followup surfaces: the whole bot honors prompt_sm_prefix, not
+# just PR review. These three getters are fail-closed (sm_fallback=False), so
+# an SM miss must return "" (→ ESCALATE) and NOT silently run the bundled
+# default on a customer-visible reply.
+@pytest.mark.parametrize("getter, env_var, sm_name, filename", [
+    ("get_issue_prompt", "ISSUE_CLASSIFY_PROMPT",
+     "deequ-bot/issue-classify-prompt", "issue-classify.txt"),
+    ("get_issue_respond_prompt", "ISSUE_RESPOND_PROMPT",
+     "deequ-bot/issue-respond-prompt", "issue-respond.txt"),
+    ("get_followup_prompt", "FOLLOWUP_PROMPT",
+     "deequ-bot/followup-prompt", "followup.txt"),
+])
+def test_issue_followup_sm_hit_used(monkeypatch, getter, env_var, sm_name, filename):
+    monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setenv(f"SM_{env_var}", sm_name)
+    _stub_sm(monkeypatch, {sm_name: "CUSTOM ISSUE-PATH PROMPT"})
+    assert getattr(prompts_mod, getter)() == "CUSTOM ISSUE-PATH PROMPT"
+
+
+@pytest.mark.parametrize("getter, env_var, sm_name", [
+    ("get_issue_prompt", "ISSUE_CLASSIFY_PROMPT", "deequ-bot/issue-classify-prompt"),
+    ("get_issue_respond_prompt", "ISSUE_RESPOND_PROMPT", "deequ-bot/issue-respond-prompt"),
+    ("get_followup_prompt", "FOLLOWUP_PROMPT", "deequ-bot/followup-prompt"),
+])
+def test_issue_followup_sm_miss_fails_closed(monkeypatch, getter, env_var, sm_name):
+    # Configured-but-missing SM secret → "" (fail closed), NOT the bundled disk
+    # default. Mirrors the PR core-prompt contract.
+    monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setenv(f"SM_{env_var}", sm_name)
+    _stub_sm(monkeypatch, {})  # every fetch misses
+    assert getattr(prompts_mod, getter)() == ""
+
+
+@pytest.mark.parametrize("env_var, filename", [
+    ("ISSUE_CLASSIFY_PROMPT", "issue-classify.txt"),
+    ("ISSUE_RESPOND_PROMPT", "issue-respond.txt"),
+    ("FOLLOWUP_PROMPT", "followup.txt"),
+])
+def test_issue_followup_disk_default_when_unset(monkeypatch, env_var, filename):
+    # No inline, no SM → bundled disk default (non-empty), source labeled file:.
+    monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.delenv(f"SM_{env_var}", raising=False)
+    text, source = prompts_mod._resolve_prompt(env_var, filename)
+    assert text and text.strip()
+    assert source == f"file:prompts/{filename}"
+
+
+def test_issue_followup_provenance_sm_source(monkeypatch):
+    # A wired SM override on the issue path is labeled sm:<name> in provenance,
+    # so the audit rollup reflects the custom issue-triage prompt that ran.
+    monkeypatch.delenv("ISSUE_CLASSIFY_PROMPT", raising=False)
+    monkeypatch.setenv("SM_ISSUE_CLASSIFY_PROMPT", "deequ-bot/issue-classify-prompt")
+    _stub_sm(monkeypatch, {"deequ-bot/issue-classify-prompt": "SCALA ISSUE TRIAGE"})
+    prov = prompts_mod.compute_prompt_provenance()
+    ic = next(e for e in prov["prompts"] if e["stage"] == "issue_classify")
+    assert ic["source"] == "sm:deequ-bot/issue-classify-prompt"
+    assert ic["loaded"] is True

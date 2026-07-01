@@ -15,11 +15,16 @@ class SlackClient:
         self._repo = getattr(cfg, "repo", "")
 
     def send_escalation(self, number, title, url, labels):
+        """Post an escalation to Slack. Returns True when delivery succeeded
+        OR was intentionally skipped (Slack disabled / dry-run), False when a
+        configured delivery failed (non-200 or transport error). The caller
+        uses the bool to emit a delivery-failure metric; a skip is not a
+        failure, so those return True to avoid false alarms."""
         if not self._enabled:
-            return
+            return True
         if self._dry_run:
             logger.info(f"[DRY RUN] Slack escalation for #{number}")
-            return
+            return True
         # Title is attacker-controllable; redact secret patterns before
         # piping to a Slack channel that may have longer retention than
         # the eventual GitHub deletion.
@@ -37,12 +42,24 @@ class SlackClient:
             f"*Status:* {self._bot_name.title()} posted analysis on the issue\n\n"
             f"<{url}|View on GitHub>"
         )
-        self._send({"text": text})
+        return self._send({"text": text})
 
     def _send(self, payload):
+        """POST the payload to the webhook. Returns True on HTTP 200, False
+        otherwise. Best-effort: never raises so a Slack outage can't fail the
+        run (the primary escalation is the GitHub label+comment)."""
         try:
             resp = requests.post(self._webhook, json=payload, timeout=10)
             if resp.status_code != 200:
-                logger.error(f"Slack: {resp.status_code}")
+                logger.error("Slack delivery failed: HTTP %s", resp.status_code)
+                return False
+            return True
         except Exception as e:
-            logger.error(f"Slack failed: {e}")
+            # Log ONLY the exception type, never str(e): requests embeds the
+            # full request URL in transport-error messages, and the webhook's
+            # /services/T.../B.../<token> path IS the bearer credential. GH
+            # Actions masks the registered secret, but self-hosted runners and
+            # plain-var configs would otherwise leak the token to logs. Mirrors
+            # cloudwatch.py, which logs type(e).__name__ for the same reason.
+            logger.error("Slack delivery failed: %s", type(e).__name__)
+            return False

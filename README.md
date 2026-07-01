@@ -240,22 +240,25 @@ jobs:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 ```
 
-`prompt_sm_prefix` expands to five secret names the engine fetches in place of its bundled prompts:
+`prompt_sm_prefix` expands to eight secret names — one per prompt the bot loads, across **all four surfaces** (PR review, issue triage, issue-respond, follow-up) — that the engine fetches in place of its bundled prompts:
 
-| Secret | Stage | Missing-secret behavior |
+| Secret | Surface / Stage | Missing-secret behavior |
 |---|---|---|
-| `<prefix>/pr-investigator-prompt` | Investigator | **fail closed** — run ESCALATEs (`prompt_load_failed`) |
-| `<prefix>/pr-critic-prompt` | Critic | **fail closed** |
-| `<prefix>/pr-reporter-prompt` | Reporter | **fail closed** |
-| `<prefix>/pr-investigator-commit-prompt` | Investigator commit nudge | falls back to bundled default (doctor WARNs) |
-| `<prefix>/pr-critic-commit-prompt` | Critic commit nudge | falls back to bundled default (doctor WARNs) |
+| `<prefix>/pr-investigator-prompt` | PR — Investigator | **fail closed** — run ESCALATEs (`prompt_load_failed`) |
+| `<prefix>/pr-critic-prompt` | PR — Critic | **fail closed** |
+| `<prefix>/pr-reporter-prompt` | PR — Reporter | **fail closed** |
+| `<prefix>/pr-investigator-commit-prompt` | PR — Investigator commit nudge | falls back to bundled default (doctor WARNs) |
+| `<prefix>/pr-critic-commit-prompt` | PR — Critic commit nudge | falls back to bundled default (doctor WARNs) |
+| `<prefix>/issue-classify-prompt` | Issue triage — classify | **fail closed** — issue ESCALATEs (`prompt_load_failed`) |
+| `<prefix>/issue-respond-prompt` | Issue triage — citation-backed answer | **fail closed** — issue ESCALATEs (`prompt_load_failed: issue_respond`) |
+| `<prefix>/followup-prompt` | Follow-up replies (`issue_comment`) | **fail closed** — comment ESCALATEs (`prompt_load_failed`) |
 
-Precedence per prompt: inline `*_PROMPT` env text → `SM_*_PROMPT` secret → bundled disk default. Leave `prompt_sm_prefix` empty (the default) to use the bundled prompts.
+Precedence per prompt: inline `*_PROMPT` env text → `SM_*_PROMPT` secret → bundled disk default. Leave `prompt_sm_prefix` empty (the default) to use the bundled prompts on every surface. Setting the prefix customizes the whole bot with one knob — if you provision only some of the eight secrets, the omitted core prompts fail closed (run `shadow doctor`, which validates all eight and FAILs on a missing one).
 
 Requirements and cautions:
-- **IAM** — the role needs `secretsmanager:GetSecretValue` scoped to `<prefix>/pr-*-prompt`. The CFN Launch Stack does **not** grant this; add it yourself (see [Security model](#security-model)).
+- **IAM** — the role needs `secretsmanager:GetSecretValue` scoped to `<prefix>/*-prompt` (covers all eight; previously `pr-*` only). The CFN Launch Stack does **not** grant this; add it yourself (see [Security model](#security-model)).
 - **Region** — set `aws_region` to where the secrets and Bedrock model access live; a region mismatch makes the secrets unreadable (core prompts fail closed, commit prompts silently fall back — run `shadow doctor` to catch it).
-- **Trust boundary** — a prompt secret *is* the reviewer's system prompt. Anyone with `secretsmanager:PutSecretValue` on it can rewrite how the bot reviews. Restrict write access and enable CloudTrail on those secrets (see [Security model](#security-model)).
+- **Trust boundary** — a prompt secret *is* the reviewer's/triager's system prompt. Anyone with `secretsmanager:PutSecretValue` on it can rewrite how the bot reviews PRs or triages issues. Restrict write access and enable CloudTrail on those secrets (see [Security model](#security-model)).
 
 ---
 
@@ -392,11 +395,11 @@ Pick the trade-off:
 
 Every analyze run writes a `shadow_result.json` artifact, retained 7 days by GitHub. Read these blocks if you need to audit what Shadow did on your PR:
 
-- **`provenance`** — per-stage prompt fingerprints (SHA-256), a rollup hash, the Shadow git ref, and the model IDs that ran. Tampering with `prompts/*.txt` upstream changes the rollup. The per-prompt `source` field takes one of three values: `file:prompts/<name>` (Shadow's bundled default), `env:VAR_NAME` (inline `*_PROMPT` override), or `sm:<secret-name>` (a Secrets Manager prompt via [`prompt_sm_prefix`](#bring-your-own-prompts)). A commit-phase prompt whose SM secret is missing shows `file:` (it falls back to the bundled default); the three core prompts fail closed instead. Provenance covers the five PR-pipeline prompts; the issue-triage and follow-up prompts are not part of the rollup and (currently) have no `prompt_sm_prefix` wiring — they load from their bundled defaults or an inline `*_PROMPT` override only.
+- **`provenance`** — per-stage prompt fingerprints (SHA-256), a rollup hash, the Shadow git ref, and the model IDs that ran. Tampering with `prompts/*.txt` upstream changes the rollup. The per-prompt `source` field takes one of three values: `file:prompts/<name>` (Shadow's bundled default), `env:VAR_NAME` (inline `*_PROMPT` override), or `sm:<secret-name>` (a Secrets Manager prompt via [`prompt_sm_prefix`](#bring-your-own-prompts)). A commit-phase prompt whose SM secret is missing shows `file:` (it falls back to the bundled default); the core prompts fail closed instead. Provenance covers **all eight** prompts the bot loads — the five PR-pipeline prompts *and* the three issue-triage / follow-up prompts (`issue_classify`, `issue_respond`, `followup`) — so a swap or override of any customer-visible prompt on any surface changes the rollup. All eight also honor `prompt_sm_prefix`.
 - **`security_events`** — per-PR histogram of sanitizer blocks during the analyze stage. Categories like `aws_access_key`, `github_pat`, `jwt`, `ignore previous instructions` — never the matched value itself. The `by_category` list shows which categories fired and how often. (Sanitizer blocks during the act stage land in workflow logs, not the artifact.)
 - **`_integrity`** — SHA-256 of the artifact body, bound to `(repo, run_id, pr_number)`. The `act` job verifies this before posting; a replayed or tampered artifact is rejected. `RUN_ATTEMPT` is intentionally excluded so `gh run rerun --failed-only` still verifies. Set `SHADOW_VERIFY_ARTIFACT=false` to opt out (combined-job flows only).
 - **Refutation Trail in posted comments** — UPHELD findings include a collapsed `<details>` block showing the Investigator's hypothesis and the Critic's disprove attempt when either is non-empty. The disprove pattern is *auditable* because adopters can read why each surviving finding survived.
-- **CloudWatch custom metrics** — `Shadow/CostPerPR`, `Shadow/CriticOverturnRate`, `Shadow/InputTokens`, `Shadow/OutputTokens`, `Shadow/Invocations`, `Shadow/Escalations` per analyze run. Dimensions: `Repository`, `Pipeline`. Set `SHADOW_CLOUDWATCH_DISABLED=true` to opt out. CloudFormation grants `cloudwatch:PutMetricData` scoped to the `Shadow` namespace.
+- **CloudWatch custom metrics** — `Shadow/CostPerPR`, `Shadow/CriticOverturnRate`, `Shadow/InputTokens`, `Shadow/OutputTokens`, `Shadow/Invocations`, `Shadow/Escalations` per analyze run, plus `Shadow/PostFailures` (GitHub post failed after retries) and `Shadow/SlackDeliveryFailures` (an escalation's optional Slack ping failed to deliver) from the act step. Dimensions: `Repository`, `Pipeline`. Set `SHADOW_CLOUDWATCH_DISABLED=true` to opt out. CloudFormation grants `cloudwatch:PutMetricData` scoped to the `Shadow` namespace.
 
 ---
 
@@ -431,7 +434,7 @@ If you previously tried to set `SHADOW_DISABLED` as a Secret rather than a Varia
 | `ValidationException` on Bedrock call | Wrong model ID format | Check `BEDROCK_MODEL_ID` is `us.anthropic.claude-opus-4-7` (no `-v1` suffix on 4.7). |
 | `BOT_REQUIRE_GUARDRAIL=true and DRY_RUN=false but GUARDRAIL_ID is unset`, run exits 1 | Production run started without a guardrail wired in | Paste the stack's `GuardrailId`/`GuardrailVersion` outputs into the `GUARDRAIL_ID`/`GUARDRAIL_VERSION` repo secrets and forward them in the caller workflow's `secrets:`. To run without one, pass `require_guardrail: 'false'` under `with:`. |
 | `AccessDeniedException` on `bedrock:ApplyGuardrail` | IAM role lacks `bedrock:ApplyGuardrail` for the configured guardrail | Manual-setup only — add the `bedrock:ApplyGuardrail` statement scoped to your guardrail ARN (see [Manual setup](#manual-setup-alternative)). The Launch Stack grants it automatically. |
-| `AccessDeniedException` on `secretsmanager:GetSecretValue` (or every PR escalates with `prompt_load_failed` after setting `prompt_sm_prefix`) | Using [BYO prompts](#bring-your-own-prompts) but the IAM role can't read the secrets | Add a `secretsmanager:GetSecretValue` statement scoped to `arn:aws:secretsmanager:<region>:<acct>:secret:<prefix>/pr-*-prompt*`. The CFN Launch Stack does NOT grant this — you extend the role. Also confirm the secrets exist in `aws_region`. |
+| `AccessDeniedException` on `secretsmanager:GetSecretValue` (or every PR/issue/followup escalates with `prompt_load_failed` after setting `prompt_sm_prefix`) | Using [BYO prompts](#bring-your-own-prompts) but the IAM role can't read the secrets | Add a `secretsmanager:GetSecretValue` statement scoped to `arn:aws:secretsmanager:<region>:<acct>:secret:<prefix>/*-prompt*` (covers all eight prompt secrets — the five `pr-*` plus `issue-classify`/`issue-respond`/`followup`). The CFN Launch Stack does NOT grant this — you extend the role. Also confirm the secrets exist in `aws_region`. |
 | `[WARN] SM prompt(s) configured but fell back to bundled defaults` from `shadow doctor` | An `SM_*` prompt secret is missing/unreadable/in the wrong region, so a commit prompt silently used the bundled default | Verify the secret names exist and the role has `GetSecretValue` in `aws_region`. Core prompts fail closed loudly; commit prompts fall back silently, which is why the doctor flags it. |
 | `Required prompt missing: prompts/pr-investigator.txt` | `@v0` (or pinned SHA) doesn't include `prompts/` | Verify the ref in `sudsali/shadow` includes the `prompts/` directory. If you forked, ensure your tag does too. |
 | No comments posted, workflow green | `dry_run: true` | Set `dry_run: false` in caller-workflow inputs. |

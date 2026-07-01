@@ -47,12 +47,19 @@ on:
         type: string
         default: ""
         description: >-
-          Optional. Bring-your-own prompts: a Secrets Manager namespace (e.g.
-          'my-bot') holding <prefix>/pr-investigator-prompt, /pr-critic-prompt,
-          /pr-reporter-prompt, /pr-investigator-commit-prompt, /pr-critic-commit-prompt.
-          When set, the engine loads these instead of its bundled
-          language-agnostic prompts. Leave empty to use the bundled defaults.
-          The IAM role must allow secretsmanager:GetSecretValue on those secrets.
+          Optional. Bring-your-own prompts for the WHOLE bot: a Secrets Manager
+          namespace (e.g. 'my-bot') holding all eight prompt secrets — the five
+          PR-review prompts (<prefix>/pr-investigator-prompt, /pr-critic-prompt,
+          /pr-reporter-prompt, /pr-investigator-commit-prompt,
+          /pr-critic-commit-prompt) AND the three issue/followup prompts
+          (<prefix>/issue-classify-prompt, /issue-respond-prompt,
+          /followup-prompt). When set, the engine loads these instead of its
+          bundled language-agnostic prompts on every surface. Leave empty to use
+          the bundled defaults. The core prompts (investigator/critic/reporter/
+          issue-classify/issue-respond/followup) fail closed: a missing or
+          unreadable secret ESCALATEs rather than silently running the bundled
+          default. The IAM role must allow secretsmanager:GetSecretValue on
+          <prefix>/*-prompt.
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -157,11 +164,17 @@ jobs:
           # Bring-your-own prompts (opt-in): each SM_*_PROMPT names a Secrets
           # Manager secret the engine fetches in place of its bundled default.
           # The guard yields '' when the prefix is unset (empty = use bundled).
+          # All EIGHT prompts the bot loads are wired here, not just the PR
+          # ones — so a single prompt_sm_prefix customizes PR review, issue
+          # triage, issue-respond, and followup uniformly.
           SM_PR_INVESTIGATOR_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-investigator-prompt', inputs.prompt_sm_prefix) || '' }}
           SM_PR_CRITIC_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-critic-prompt', inputs.prompt_sm_prefix) || '' }}
           SM_PR_REPORTER_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-reporter-prompt', inputs.prompt_sm_prefix) || '' }}
           SM_PR_INVESTIGATOR_COMMIT_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-investigator-commit-prompt', inputs.prompt_sm_prefix) || '' }}
           SM_PR_CRITIC_COMMIT_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/pr-critic-commit-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_ISSUE_CLASSIFY_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/issue-classify-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_ISSUE_RESPOND_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/issue-respond-prompt', inputs.prompt_sm_prefix) || '' }}
+          SM_FOLLOWUP_PROMPT: ${{ inputs.prompt_sm_prefix && format('{0}/followup-prompt', inputs.prompt_sm_prefix) || '' }}
           DRY_RUN: ${{ inputs.dry_run }}
           ARTIFACT_PATH: ${{ runner.temp }}/shadow_result.json
           # Audit anchor — what shadow_ref this run pinned. GITHUB_SHA is the

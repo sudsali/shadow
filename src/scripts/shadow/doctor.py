@@ -274,7 +274,8 @@ def _check_prompts_loadable(args, result):
         )
         return
     result.passed(
-        f"all 5 pipeline prompts loaded (rollup {prov['rollup_sha256'][:16]}...)"
+        f"all {len(prov['prompts'])} prompts loaded across all surfaces "
+        f"(rollup {prov['rollup_sha256'][:16]}...)"
     )
 
 
@@ -283,6 +284,29 @@ def _stage_source(prov, stage):
         if entry["stage"] == stage:
             return entry.get("source", "")
     return ""
+
+
+def _check_slack(args, result):
+    """Validate the Slack webhook format if configured. Slack is optional and
+    off by default, so an unset webhook is an informational PASS. When set, a
+    malformed URL would only surface as a swallowed delivery failure at the
+    first real escalation — this catches a typo'd/expired-shaped URL at
+    preflight instead, closing the last integration doctor didn't cover. We
+    check shape only (never POST — that would spam the channel) and never log
+    the URL, whose path segment is a bearer credential."""
+    url = os.getenv("SLACK_WEBHOOK_URL", "").strip()
+    if not url:
+        result.passed("SLACK_WEBHOOK_URL not set — Slack escalations disabled (optional).")
+        return
+    if not url.startswith("https://hooks.slack.com/services/"):
+        result.warned(
+            "SLACK_WEBHOOK_URL is set but does not look like a Slack webhook "
+            "(expected https://hooks.slack.com/services/...).",
+            "verify the URL copied from Slack → Incoming Webhooks; a malformed "
+            "URL fails silently at escalation time (delivery is best-effort)",
+        )
+        return
+    result.passed("SLACK_WEBHOOK_URL is set and well-formed.")
 
 
 def main(argv=None):
@@ -313,6 +337,10 @@ def main(argv=None):
     print("Repo config")
     _check_shadow_yml(args, result)
     _check_prompts_loadable(args, result)
+    print()
+
+    print("Slack")
+    _check_slack(args, result)
     print()
 
     summary = {"fails": result.fails, "warns": result.warns}

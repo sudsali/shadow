@@ -1,19 +1,34 @@
-"""The agentic pipeline fails closed if any of these prompt files goes missing.
+"""Every prompt the bot loads fails closed if its file goes missing.
 
 Catching it at test-time beats catching it at production-time when the
-workflow's only signal is `prompt_load_failed: investigator,critic,reporter`.
+workflow's only signal is `prompt_load_failed: ...`. This covers ALL four
+surfaces — PR review AND issue triage / issue-respond / followup — because
+all eight prompts are customer-visible and fail closed identically.
+
+EXPECTED is derived from prompts._ACTIVE_PROMPTS (the single source of truth
+the engine, provenance, and doctor all iterate) so the PR and issue/followup
+sets cannot drift apart: adding a prompt to the engine automatically requires
+its file here.
 """
 from pathlib import Path
 
+from shadow import prompts as prompts_mod
+
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 
-EXPECTED = (
-    "pr-investigator.txt",
-    "pr-investigator-commit.txt",
-    "pr-critic.txt",
-    "pr-critic-commit.txt",
-    "pr-reporter.txt",
-)
+# One source of truth: the filenames the engine actually loads at runtime.
+EXPECTED = tuple(filename for _stage, _env, filename, _fb in prompts_mod._ACTIVE_PROMPTS)
+
+
+def test_expected_covers_all_surfaces():
+    # Guard the derivation itself: all three issue/followup prompts and all
+    # five PR prompts must be present, so a regression that dropped them from
+    # _ACTIVE_PROMPTS (shrinking the guarded set) fails loudly here.
+    assert set(EXPECTED) >= {
+        "pr-investigator.txt", "pr-investigator-commit.txt", "pr-critic.txt",
+        "pr-critic-commit.txt", "pr-reporter.txt",
+        "issue-classify.txt", "issue-respond.txt", "followup.txt",
+    }
 
 
 def test_all_prompt_files_present():

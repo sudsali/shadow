@@ -21,7 +21,7 @@ _DEFAULT_NAMESPACE = "Shadow"
 
 
 def emit_metrics(*, repository, metrics, action, pipeline="agentic", region=None, reason=None,
-                  base_metrics=True, post_failure_count=0):
+                  base_metrics=True, post_failure_count=0, slack_failure_count=0):
     """Push a small batch of metrics to CloudWatch.
 
     `metrics` is the artifact's `metrics` dict (post-_finalize_metrics).
@@ -31,7 +31,13 @@ def emit_metrics(*, repository, metrics, action, pipeline="agentic", region=None
     first `:` to bound dimension cardinality: every (model_id, exception)
     combo would otherwise mint a separate stream (~$0.30/month each).
     `base_metrics=False` lets the act() post-failure path emit only the
-    PostFailures metric without re-counting Invocations against analyze's.
+    PostFailures / SlackDeliveryFailures metrics without re-counting
+    Invocations against analyze's.
+
+    `slack_failure_count` (act-time) emits a SlackDeliveryFailures metric so a
+    Slack-only team sees their escalation channel go dark — the Slack surface
+    was otherwise the one integration with no failure metric, unlike GitHub
+    posts (PostFailures).
 
     Returns (ok, reason). Caller logs the reason but never fails on it —
     metrics are observability, not a posting prerequisite."""
@@ -79,7 +85,8 @@ def emit_metrics(*, repository, metrics, action, pipeline="agentic", region=None
         dims.append({"Name": "Reason", "Value": reason_str[:250] or "unknown"})
     data = list(_build_metric_data(metrics, action, dims, timestamp,
                                     base_metrics=base_metrics,
-                                    post_failure_count=post_failure_count))
+                                    post_failure_count=post_failure_count,
+                                    slack_failure_count=slack_failure_count))
     if not data:
         return False, "no metrics to emit"
 
@@ -93,7 +100,8 @@ def emit_metrics(*, repository, metrics, action, pipeline="agentic", region=None
 
 
 def _build_metric_data(metrics, action, dims, timestamp,
-                        base_metrics=True, post_failure_count=0):
+                        base_metrics=True, post_failure_count=0,
+                        slack_failure_count=0):
     if not isinstance(metrics, dict):
         return
 
@@ -148,3 +156,9 @@ def _build_metric_data(metrics, action, dims, timestamp,
 
     if post_failure_count > 0:
         yield _datum("PostFailures", post_failure_count, unit="Count")
+
+    # Slack is best-effort (never fails the run), but a silent drop means a
+    # Slack-only team's escalation channel goes dark with no signal. Emit a
+    # dedicated failure metric so the drop is graphable alongside Escalations.
+    if slack_failure_count > 0:
+        yield _datum("SlackDeliveryFailures", slack_failure_count, unit="Count")

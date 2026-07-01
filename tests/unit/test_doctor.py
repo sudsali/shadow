@@ -93,6 +93,36 @@ def test_check_prompts_loadable_passes_in_repo():
     assert r.warns == 0
 
 
+def test_check_prompts_validates_all_surfaces(capsys):
+    # The doctor must validate every prompt the bot loads, not just the 5 PR
+    # ones — the PASS message reports the true count (8) across all surfaces.
+    from shadow import prompts
+    r = doctor._Result()
+    doctor._check_prompts_loadable(_Args(), r)
+    assert r.fails == 0
+    out = capsys.readouterr().out
+    assert str(len(prompts._ACTIVE_PROMPTS)) in out
+    assert len(prompts._ACTIVE_PROMPTS) == 8  # 5 PR + issue-classify/respond/followup
+
+
+def test_check_prompts_fails_when_issue_prompt_missing(monkeypatch, tmp_path):
+    # An install missing only the issue-path prompts (partial fork / bad pin)
+    # must FAIL preflight — previously invisible because doctor only saw the 5
+    # PR prompts. Point the prompts dir at a tmp dir holding only the PR files.
+    from shadow import prompts
+    for _stage, _env, filename, _fb in prompts._ACTIVE_PROMPTS:
+        if filename.startswith("pr-"):
+            (tmp_path / filename).write_text("stub PR prompt")
+    monkeypatch.setattr(prompts, "_PROMPTS_DIR", tmp_path)
+    # Clear any inline/SM overrides so resolution hits the (missing) disk file.
+    for _stage, env_var, _filename, _fb in prompts._ACTIVE_PROMPTS:
+        monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.delenv(f"SM_{env_var}", raising=False)
+    r = doctor._Result()
+    doctor._check_prompts_loadable(_Args(), r)
+    assert r.fails == 1
+
+
 def test_check_prompts_warns_on_silent_sm_fallback(monkeypatch):
     # S1 regression: an SM-configured commit prompt whose secret MISSES silently
     # falls back to the bundled disk default (loaded=True). The doctor must WARN
@@ -129,6 +159,31 @@ def test_check_prompts_warns_lists_all_fallen_back_stages(monkeypatch, capsys):
     assert r.fails == 0 and r.warns == 1
     out = capsys.readouterr().out
     assert "investigator_commit" in out and "critic_commit" in out
+
+
+def test_check_slack_unset_passes(monkeypatch):
+    # Slack is optional/off-by-default — an unset webhook is an informational
+    # PASS, never a WARN/FAIL.
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    r = doctor._Result()
+    doctor._check_slack(_Args(), r)
+    assert r.fails == 0 and r.warns == 0
+
+
+def test_check_slack_wellformed_passes(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/tok")
+    r = doctor._Result()
+    doctor._check_slack(_Args(), r)
+    assert r.fails == 0 and r.warns == 0
+
+
+def test_check_slack_malformed_warns_without_leaking_url(monkeypatch, capsys):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://evil.example.com/hook/SECRETTOKEN")
+    r = doctor._Result()
+    doctor._check_slack(_Args(), r)
+    assert r.warns == 1 and r.fails == 0
+    # The URL (potential credential) must not be echoed into doctor output.
+    assert "SECRETTOKEN" not in capsys.readouterr().out
 
 
 def test_main_returns_nonzero_on_fails(monkeypatch, capsys):

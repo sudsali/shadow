@@ -70,11 +70,11 @@ def _read_from_sm(secret_name):
         from botocore.config import Config as BotoConfig
         region = (os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
                   or "us-east-1")
-        # Bound the fetch. A prompt is a tiny call; the pipeline resolves five
-        # and the provenance pass re-resolves misses, so an unresponsive-but-
-        # routable SM endpoint must not stall the run toward its wall-clock
-        # budget before failing closed. Mirrors bedrock_client's explicit
-        # timeouts — every AWS client here caps its stall.
+        # Bound the fetch. A prompt is a tiny call, but a run resolves several
+        # prompts and the provenance pass re-resolves misses, so an
+        # unresponsive-but-routable SM endpoint must not stall the run toward
+        # its wall-clock budget before failing closed. Mirrors bedrock_client's
+        # explicit timeouts — every AWS client here caps its stall.
         client = boto3.client(
             "secretsmanager", region_name=region,
             config=BotoConfig(
@@ -195,10 +195,19 @@ def prompt_version(template):
     return hashlib.sha256(template.encode()).hexdigest()[:8]
 
 
-# Active pipeline prompts captured by compute_prompt_provenance(): tuples of
+# Every prompt the bot loads at runtime, captured by
+# compute_prompt_provenance() and validated by doctor. Tuples of
 # (stage, env_var, filename, sm_fallback_to_disk). Order is the published
 # artifact ordering; do not reorder casually. Each sm_fallback flag MUST match
 # the corresponding getter, or provenance mislabels a fell-back prompt's source.
+#
+# All four surfaces are first-class here, not just PR review: the 3 issue/
+# followup prompts drive customer-visible output (issue classification,
+# citation-backed answers, follow-up replies) exactly as the 5 PR prompts do,
+# so they belong in the audit rollup and the doctor's loadability check too.
+# The issue/followup core prompts are fail-closed (sm_fallback=False) to match
+# their getters below — a missing/misconfigured secret must surface as "" (and
+# ESCALATE), never silently run the bundled default on a customer-visible reply.
 _ACTIVE_PROMPTS = (
     ("investigator", "PR_INVESTIGATOR_PROMPT", "pr-investigator.txt", False),
     ("critic", "PR_CRITIC_PROMPT", "pr-critic.txt", False),
@@ -206,6 +215,9 @@ _ACTIVE_PROMPTS = (
     ("investigator_commit", "PR_INVESTIGATOR_COMMIT_PROMPT",
      "pr-investigator-commit.txt", True),
     ("critic_commit", "PR_CRITIC_COMMIT_PROMPT", "pr-critic-commit.txt", True),
+    ("issue_classify", "ISSUE_CLASSIFY_PROMPT", "issue-classify.txt", False),
+    ("issue_respond", "ISSUE_RESPOND_PROMPT", "issue-respond.txt", False),
+    ("followup", "FOLLOWUP_PROMPT", "followup.txt", False),
 )
 
 
