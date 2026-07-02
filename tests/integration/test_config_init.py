@@ -73,6 +73,7 @@ def test_env_overrides_yaml(monkeypatch):
 
 _MODEL_ENV_VARS = (
     "BEDROCK_MODEL_ID", "BEDROCK_REPORTER_MODEL_ID", "BEDROCK_CRITIC_MODEL_ID",
+    "BEDROCK_ISSUE_MODEL_ID",
 )
 
 
@@ -100,6 +101,46 @@ def test_yaml_models_block_overrides_per_stage(monkeypatch):
         assert cfg.bedrock_model_id == "us.anthropic.claude-sonnet-4-6"
         assert cfg.critic_model_id == "us.anthropic.claude-opus-4-7"
         assert "haiku" in cfg.reporter_model_id
+
+
+def test_issue_model_defaults_to_reporter(monkeypatch):
+    """issue_model_id defaults to reporter_model_id (Haiku) when unset — the
+    decoupling must be zero-behavior-change until an adopter opts in."""
+    _set_required_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        cfg = Config()
+        assert cfg.issue_model_id == cfg.reporter_model_id
+        assert "haiku" in cfg.issue_model_id
+
+
+def test_issue_model_env_override(monkeypatch):
+    # Set issue answers to Sonnet 4.6 WITHOUT moving the PR reporter off Haiku.
+    _set_required_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        monkeypatch.setenv("BEDROCK_ISSUE_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+        from shadow.config import Config
+        cfg = Config()
+        assert cfg.issue_model_id == "us.anthropic.claude-sonnet-4-6"
+        assert "haiku" in cfg.reporter_model_id       # PR reporter unchanged
+
+
+def test_issue_model_yaml_override(monkeypatch):
+    _set_required_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".shadow.yml").write_text(
+            "codebase:\n  src_dir: src\n"
+            "models:\n  issue: us.anthropic.claude-sonnet-4-6\n"
+        )
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import Config
+        cfg = Config()
+        assert cfg.issue_model_id == "us.anthropic.claude-sonnet-4-6"
 
 
 def test_env_model_id_overrides_yaml_models_block(monkeypatch):

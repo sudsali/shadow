@@ -177,7 +177,7 @@ def analyze():
     # drift onto the wrong model. (The PR pipeline's own artifacts set this
     # internally in _write_artifact_pipeline; a multi-model PR review naming
     # its Opus investigator is deliberate.)
-    surface_model_id = cfg.bedrock_model_id if is_pr else cfg.reporter_model_id
+    surface_model_id = cfg.bedrock_model_id if is_pr else cfg.issue_model_id
 
     author = _nested_get(item, "user", "login", default="")
     if author.endswith("[bot]"):
@@ -312,10 +312,13 @@ def analyze():
         prompt_id = prompts.prompt_version(tmpl)
 
     schema = FOLLOWUP_SCHEMA if is_followup else ISSUE_RESPONSE_SCHEMA
-    # Issue path uses Haiku (cfg.reporter_model_id): Opus 4.7 doesn't accept
-    # outputConfig.textFormat (structured output) over Bedrock today; Haiku does.
+    # Issue answers use cfg.issue_model_id (defaults to Haiku; set a stronger
+    # model like Sonnet 4.6 for better customer-facing answers). It MUST accept
+    # outputConfig.textFormat (structured output) over Bedrock — Opus 4.8 /
+    # Sonnet 5 reject it and would fail here. `shadow doctor` validates the
+    # configured issue model up front so that misconfig is caught pre-flight.
     raw = bedrock.invoke(system_prompt, user_prompt, json_schema=schema,
-                         cache_prefix=True, model_id=cfg.reporter_model_id)
+                         cache_prefix=True, model_id=cfg.issue_model_id)
 
     if raw is None:
         if _bedrock_throttled(bedrock):
@@ -328,7 +331,7 @@ def analyze():
             "action": "ESCALATE", "labels": [], "response": "",
             "reason": _bedrock_unavailable_reason(bedrock), "title": title,
             "html_url": html_url, "number": number, "is_pr": is_pr,
-            # surface_model_id == cfg.reporter_model_id here (issue/followup
+            # surface_model_id == cfg.issue_model_id here (issue/followup
             # surface), the model this path actually invoked above.
             "prompt_id": prompt_id, "model_id": surface_model_id,
         })
@@ -364,7 +367,7 @@ def analyze():
             respond_user = _format_issue_input(title, body, comments_text)
             raw2 = bedrock.invoke(respond_system, respond_user,
                                   json_schema=ISSUE_RESPONSE_SCHEMA,
-                                  model_id=cfg.reporter_model_id)
+                                  model_id=cfg.issue_model_id)
             if raw2 is None:
                 # Second-pass Bedrock invoke failed (circuit breaker, throttle,
                 # guardrail, exception). Fail closed exactly like the first-pass
@@ -404,8 +407,8 @@ def analyze():
         "inline_comments": parsed.get("inline_comments", []),
         "title": title, "html_url": html_url, "number": number,
         # surface_model_id names the model that actually ran: the issue/followup
-        # path invokes Haiku (cfg.reporter_model_id), so the user-facing footer
-        # says Haiku, not the Investigator's Opus.
+        # path invokes cfg.issue_model_id, so the user-facing footer names that
+        # model (not the Investigator's Opus).
         "is_pr": is_pr, "prompt_id": prompt_id, "model_id": surface_model_id,
     })
 
@@ -2007,23 +2010,33 @@ def _build_provenance(cfg):
             "investigator": cfg.bedrock_model_id,
             "critic": cfg.critic_model_id,
             "reporter": cfg.reporter_model_id,
+            "issue": cfg.issue_model_id,
         },
         "prompts": prompts.compute_prompt_provenance(),
     }
 
 
 def _build_provenance_from_env():
-    """Best-effort provenance for SKIP/ESCALATE paths that don't have a
-    Config in scope. Reads model IDs from the same env vars Config does."""
+    """Best-effort provenance for SKIP/ESCALATE paths that don't have a Config
+    in scope. Mirrors Config's env>default resolution and DEFAULTS: investigator
+    /critic default to Opus, but reporter AND issue default to Haiku (Config's
+    _DEFAULT_REPORTER_MODEL), NOT to BEDROCK_MODEL_ID — else an adopter who sets
+    only BEDROCK_MODEL_ID=Opus would see the reporter/issue misattributed to Opus
+    in early-exit artifacts while runtime actually ran Haiku. (yaml-only model
+    overrides are not visible here — this path has no Config; those artifacts are
+    the cheap SKIP/ESCALATE ones, and the full path uses _build_provenance(cfg).)"""
+    _opus = "us.anthropic.claude-opus-4-7"
+    _haiku = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    investigator = os.getenv("BEDROCK_MODEL_ID", _opus)
+    reporter = (os.getenv("BEDROCK_REPORTER_MODEL_ID") or "").strip() or _haiku
     return {
         "schema_version": 1,
         "shadow_ref": os.getenv("SHADOW_BOT_REF", "").strip() or "unknown",
         "models": {
-            "investigator": os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-7"),
-            "critic": (os.getenv("BEDROCK_CRITIC_MODEL_ID") or "").strip()
-                      or os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-7"),
-            "reporter": (os.getenv("BEDROCK_REPORTER_MODEL_ID") or "").strip()
-                        or os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-7"),
+            "investigator": investigator,
+            "critic": (os.getenv("BEDROCK_CRITIC_MODEL_ID") or "").strip() or investigator,
+            "reporter": reporter,
+            "issue": (os.getenv("BEDROCK_ISSUE_MODEL_ID") or "").strip() or reporter,
         },
         "prompts": prompts.compute_prompt_provenance(),
     }

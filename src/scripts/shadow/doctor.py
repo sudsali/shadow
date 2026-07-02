@@ -130,27 +130,48 @@ def _check_bedrock_access(args, result):
         "BEDROCK_REPORTER_MODEL_ID", shadow_config.get(yml, "models", "reporter"), _default_haiku)
     critic = shadow_config.env_or(
         "BEDROCK_CRITIC_MODEL_ID", shadow_config.get(yml, "models", "critic"), investigator)
-    needed = [("Investigator", investigator), ("Reporter", reporter)]
+    issue = shadow_config.env_or(
+        "BEDROCK_ISSUE_MODEL_ID", shadow_config.get(yml, "models", "issue"), reporter)
+    # (label, model_id, needs_structured_output). The Reporter and Issue paths
+    # send outputConfig.textFormat, which some models (Opus 4.8 / Sonnet 5)
+    # reject — probe those WITH a schema so a misconfigured issue/reporter model
+    # fails preflight here instead of hard-failing on the first real issue.
+    needed = [("Investigator", investigator, False), ("Reporter", reporter, True)]
     if critic != investigator:
-        needed.append(("Critic", critic))
+        needed.append(("Critic", critic, False))
+    if issue != reporter:
+        needed.append(("Issue", issue, True))
     client = boto3.client("bedrock-runtime", region_name=region)
+    # Minimal schema mirroring the runtime structured-output shape.
+    _probe_schema = json.dumps({"type": "object", "properties": {"ok": {"type": "string"}},
+                                "required": ["ok"], "additionalProperties": False})
     failures = []
-    for label, model_id in needed:
+    for label, model_id, needs_struct in needed:
         try:
-            client.converse(
-                modelId=model_id,
-                messages=[{"role": "user", "content": [{"text": "hi"}]}],
-                inferenceConfig=_build_inference_config(1, 0.0, model_id),
-            )
+            kwargs = {
+                "modelId": model_id,
+                "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                "inferenceConfig": _build_inference_config(16, 0.0, model_id),
+            }
+            if needs_struct:
+                kwargs["outputConfig"] = {"textFormat": {"type": "json_schema",
+                    "structure": {"jsonSchema": {"schema": _probe_schema, "name": "probe"}}}}
+            client.converse(**kwargs)
         except (ClientError, BotoCoreError, NoCredentialsError) as e:
             failures.append((label, model_id, type(e).__name__, str(e)))
     if not failures:
-        models = ", ".join(sorted({m for _label, m in needed}))
+        models = ", ".join(sorted({m for _label, m, _s in needed}))
         result.passed(f"Bedrock invoke succeeded in {region} for: {models}")
         return
     for label, model_id, exc_type, exc_msg in failures:
+        struct_hint = ""
+        _lm = exc_msg.lower()
+        if label in ("Reporter", "Issue") and ("output_config" in _lm or "outputconfig" in _lm
+                                                or "extra inputs are not permitted" in _lm):
+            struct_hint = (" — this model may not support structured output "
+                           "over Bedrock (use Haiku 4.5 or Sonnet 4.6, not Opus 4.8 / Sonnet 5)")
         result.failed(
-            f"Bedrock {label} model {model_id} unreachable in {region}: {exc_type}",
+            f"Bedrock {label} model {model_id} unreachable in {region}: {exc_type}{struct_hint}",
             f"console → Bedrock → Model access (region: {region}) — see {_DOC_BASE}aws-setup; "
             f"if you provisioned via CFN, ensure --region matches the BedrockRegion you chose",
         )

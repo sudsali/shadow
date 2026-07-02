@@ -22,4 +22,6 @@ bot:
 models:
   investigator: us.anthropic.claude-opus-4-7
   critic: us.anthropic.claude-opus-4-7
-  reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0   # PR-review JSON formatting
+  # issue: <model>   # issue/followup answers; defaults to `reporter`. Must
+  #                  # support structured output (Haiku 4.5 or Sonnet 4.6).

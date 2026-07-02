@@ -189,11 +189,14 @@ bot:
   max_runs_per_hour: 20             # 0..100; per-(repo, item) rate limit; 0 disables
 
 # Override per-stage models if you want a different cost/quality trade-off.
-# Env vars BEDROCK_MODEL_ID / BEDROCK_REPORTER_MODEL_ID / BEDROCK_CRITIC_MODEL_ID take precedence.
+# Env vars BEDROCK_MODEL_ID / BEDROCK_REPORTER_MODEL_ID / BEDROCK_CRITIC_MODEL_ID /
+# BEDROCK_ISSUE_MODEL_ID take precedence.
 models:
   investigator: us.anthropic.claude-opus-4-7
   critic: us.anthropic.claude-opus-4-7
-  reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0   # PR-review JSON formatting only
+  # issue: us.anthropic.claude-sonnet-4-6   # issue/followup answers; defaults to `reporter`.
+  #                                          # Must support structured output (Haiku 4.5 / Sonnet 4.6).
 ```
 
 ### Env vars (set in your caller workflow's `env:` block)

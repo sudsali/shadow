@@ -58,6 +58,22 @@ class Config:
                 "BEDROCK_REPORTER_MODEL_ID to override.",
                 self.reporter_model_id, self.bedrock_model_id,
             )
+        # Model for the issue-triage / issue-respond / followup answers.
+        # Defaults to the reporter model (Haiku) so behavior is unchanged, but
+        # is a distinct knob: issue answers are customer-facing prose that
+        # benefit from a stronger model (bench: Sonnet 4.6 >> Haiku on accuracy
+        # + hallucination), whereas the PR reporter only serializes the Critic's
+        # verdicts into JSON and stays cheap. Must still support structured
+        # output over Bedrock (Haiku 4.5 / Sonnet 4.6 do; Opus 4.8 / Sonnet 5
+        # do NOT), same constraint as the reporter.
+        self.issue_model_id = _scrub_model_id(shadow_config.env_or(
+            "BEDROCK_ISSUE_MODEL_ID",
+            shadow_config.get(yml, "models", "issue"),
+            self.reporter_model_id,
+        ), self.reporter_model_id)
+        if self.issue_model_id != self.reporter_model_id:
+            logger.info("Issue-answer model: %s (reporter: %s)",
+                        self.issue_model_id, self.reporter_model_id)
         # Critic runs converse_with_tools — override must support tool use.
         self.critic_model_id = _scrub_model_id(shadow_config.env_or(
             "BEDROCK_CRITIC_MODEL_ID",
