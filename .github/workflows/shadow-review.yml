@@ -74,6 +74,9 @@ on:
         required: false
       BEDROCK_CRITIC_MODEL_ID:
         required: false
+      BEDROCK_ISSUE_MODEL_ID:
+        required: false
+        description: "Model for issue/followup answers (defaults to the reporter model). Must support structured output over Bedrock (Haiku 4.5 / Sonnet 4.6)."
       GUARDRAIL_ID:
         required: false
       GUARDRAIL_VERSION:
@@ -155,6 +158,7 @@ jobs:
           BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID || 'us.anthropic.claude-opus-4-7' }}
           BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID || 'us.anthropic.claude-haiku-4-5-20251001-v1:0' }}
           BEDROCK_CRITIC_MODEL_ID: ${{ secrets.BEDROCK_CRITIC_MODEL_ID }}
+          BEDROCK_ISSUE_MODEL_ID: ${{ secrets.BEDROCK_ISSUE_MODEL_ID }}
           GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
           GUARDRAIL_VERSION: ${{ secrets.GUARDRAIL_VERSION }}
           BOT_AGENT_PIPELINE: "1"

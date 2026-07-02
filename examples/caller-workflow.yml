@@ -77,6 +77,9 @@ jobs:
       # BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
       # BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID }}
       # BEDROCK_CRITIC_MODEL_ID: ${{ secrets.BEDROCK_CRITIC_MODEL_ID }}
+      # Issue/followup answers (defaults to reporter). Must support structured
+      # output — Haiku 4.5 or Sonnet 4.6 (not Opus 4.8 / Sonnet 5).
+      # BEDROCK_ISSUE_MODEL_ID: ${{ secrets.BEDROCK_ISSUE_MODEL_ID }}
       # KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
       # KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
       # SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
