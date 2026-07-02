@@ -183,6 +183,7 @@ codebase:
 
 bot:
   name: shadow                      # used in marker comments; alphanumeric + '-_' only
+  attribution: ""                   # optional one-line footer on posted comments (e.g. "Reviewed by Shadow"); empty = none
   escalate_label: needs-human       # must already exist in your repo's Labels
   max_replies: 2                    # 0..100; cap on followup replies before next user comment ESCALATEs
   max_runs_per_hour: 20             # 0..100; per-(repo, item) rate limit; 0 disables

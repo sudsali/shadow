@@ -10,6 +10,7 @@ codebase:
 
 bot:
   name: shadow                       # used in marker comments + messages
+  attribution: ""                    # optional one-line footer on posted comments, e.g. "Reviewed by Shadow" (empty = none)
   escalate_label: needs-human
   max_replies: 2                     # per-(issue, PR) cap on bot follow-up replies; 0..100, negative falls back to default
   max_runs_per_hour: 20              # per-(repo, item) hourly cap on Shadow workflow runs; 0 disables, 0..100, negative falls back to default

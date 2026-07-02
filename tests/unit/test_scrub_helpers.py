@@ -6,11 +6,57 @@ back to safe defaults, not crash the workflow or escape into prose.
 import pytest
 
 from shadow.config import (
+    _scrub_attribution,
     _scrub_codeblock_token,
     _scrub_label,
     _scrub_marker_token,
     _str_or_default,
 )
+
+
+class TestScrubAttribution:
+    def test_empty_default(self):
+        assert _scrub_attribution("") == ""
+
+    def test_non_string(self):
+        assert _scrub_attribution(None) == ""
+        assert _scrub_attribution(123) == ""
+
+    def test_clean_value_preserved(self):
+        # A normal one-line attribution (incl. a URL and a middot) survives.
+        v = "Reviewed by Shadow · github.com/sudsali/shadow"
+        assert _scrub_attribution(v) == v
+
+    def test_strips_newlines_backticks_and_comment_delims(self):
+        # Newlines collapse to spaces (stay one line); backticks + HTML-comment
+        # delimiters removed so it can't break the footer or the clean-marker.
+        out = _scrub_attribution("evil --> <!-- x `code`\nsecond")
+        assert "\n" not in out
+        assert "`" not in out
+        assert "<!--" not in out and "-->" not in out
+
+    def test_length_capped(self):
+        assert len(_scrub_attribution("x" * 500)) == 200
+
+    @pytest.mark.parametrize("marker", [
+        "system:", "</user>", "ignore previous instructions",
+        "my instructions are", "<|im_start|>",
+    ])
+    def test_injection_markers_removed(self, marker):
+        # Attribution is appended OUTSIDE the sanitize() boundary, so it must
+        # self-scrub the same markers — config must not become a way to slip an
+        # injection marker into every posted comment.
+        from shadow.sanitizer import sanitize
+        out = _scrub_attribution(f"Reviewed by Shadow {marker} tail")
+        assert marker.lower() not in out.lower()
+        # And the scrubbed result must not itself trip the sanitizer.
+        assert sanitize(out) is not None
+
+    def test_at_and_hash_neutralized(self):
+        # A typo'd value must not fire GitHub @mentions or #issue auto-links.
+        out = _scrub_attribution("@maintainers see #555")
+        assert "@​" in out and "#​" in out  # zwj-broken
+        assert "@maintainers" not in out and "#555" not in out
 
 
 @pytest.mark.parametrize("val,default,expected", [

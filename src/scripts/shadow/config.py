@@ -142,6 +142,13 @@ class Config:
             shadow_config.get(yml, "bot", "name"),
             "shadow",
         ), "shadow")
+        # Optional one-line attribution appended to the posted comment footer
+        # (e.g. product name + link). Empty by default so footers are unchanged.
+        self.bot_attribution = _scrub_attribution(shadow_config.env_or(
+            "BOT_ATTRIBUTION",
+            shadow_config.get(yml, "bot", "attribution"),
+            "",
+        ))
         # Posted to GitHub Labels API; reject non-strings, oversized, and
         # whitespace-only values so a malformed yaml doesn't trigger a 422.
         self.escalate_label = _scrub_label(shadow_config.env_or(
@@ -264,6 +271,33 @@ def _scrub_codeblock_token(val):
     if not isinstance(val, str):
         return ""
     return val.replace("`", "").replace("\n", "").replace("\r", "").strip()
+
+
+def _scrub_attribution(val):
+    """One-line footer attribution, appended to posted comments outside the
+    sanitize() boundary — so it must be self-scrubbing to the same standard the
+    sanitizer enforces on model output, or adopter config becomes a way to slip
+    unsanitized text past it. Non-string/empty yields "".
+
+    Removes: newlines/backticks/`<!--`/`-->` (would break the one-line footer or
+    the adjacent clean-marker); any sanitizer injection marker (so config can't
+    bypass the marker block bot output is held to); and neutralizes `@`/`#` so a
+    stray value can't fire GitHub auto-mentions or issue-refs. Length-capped."""
+    if not isinstance(val, str):
+        return ""
+    val = val.replace("\r", " ").replace("\n", " ").replace("`", "")
+    val = val.replace("<!--", "").replace("-->", "")
+    # Drop injection markers using the sanitizer's live list (single source of
+    # truth) so this can't drift out of sync as new markers are added.
+    from .sanitizer import _INJECTION_MARKERS
+    lowered = val.lower()
+    for marker in _INJECTION_MARKERS:
+        if marker in lowered:
+            val = re.sub(re.escape(marker), "", val, flags=re.IGNORECASE)
+            lowered = val.lower()
+    # Break GitHub auto-linking of @mentions / #issue-refs from a typo'd value.
+    val = val.replace("@", "@​").replace("#", "#​")
+    return val.strip()[:200]
 
 
 def _scrub_label(val, default):
