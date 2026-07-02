@@ -114,12 +114,25 @@ def _check_bedrock_access(args, result):
     # converse is the only way to detect missing per-account model access
     # before a real PR review hits the same 403 mid-loop.
     # Use bedrock_client's helper so doctor and runtime stay in lockstep on
-    # which model families reject sampling params (Opus 4.7 today).
+    # which model families reject sampling params.
     from .bedrock_client import _build_inference_config
-    needed = [
-        ("Investigator/Critic", "us.anthropic.claude-opus-4-7"),
-        ("Reporter", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
-    ]
+    from . import shadow_config
+    # Validate the models the adopter actually configured, not hardcoded ones —
+    # otherwise doctor greens an install whose real model (e.g. an Opus 4.8
+    # override) is unreachable. Resolve exactly as Config does: env > .shadow.yml
+    # > default, so a yaml-only override is validated too.
+    _default_opus = "us.anthropic.claude-opus-4-7"
+    _default_haiku = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    yml = shadow_config.load(args.repo_root or os.getenv("SHADOW_REPO_ROOT", "."))
+    investigator = shadow_config.env_or(
+        "BEDROCK_MODEL_ID", shadow_config.get(yml, "models", "investigator"), _default_opus)
+    reporter = shadow_config.env_or(
+        "BEDROCK_REPORTER_MODEL_ID", shadow_config.get(yml, "models", "reporter"), _default_haiku)
+    critic = shadow_config.env_or(
+        "BEDROCK_CRITIC_MODEL_ID", shadow_config.get(yml, "models", "critic"), investigator)
+    needed = [("Investigator", investigator), ("Reporter", reporter)]
+    if critic != investigator:
+        needed.append(("Critic", critic))
     client = boto3.client("bedrock-runtime", region_name=region)
     failures = []
     for label, model_id in needed:
@@ -132,7 +145,8 @@ def _check_bedrock_access(args, result):
         except (ClientError, BotoCoreError, NoCredentialsError) as e:
             failures.append((label, model_id, type(e).__name__, str(e)))
     if not failures:
-        result.passed(f"Bedrock invoke succeeded in {region} for both models")
+        models = ", ".join(sorted({m for _label, m in needed}))
+        result.passed(f"Bedrock invoke succeeded in {region} for: {models}")
         return
     for label, model_id, exc_type, exc_msg in failures:
         result.failed(

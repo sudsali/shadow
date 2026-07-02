@@ -1830,6 +1830,7 @@ def _finalize_metrics(metrics, inv, crit):
 # only when the override is more expensive than Opus 4.7.
 _MODEL_PRICING_PER_M_TOKENS = {
     "us.anthropic.claude-opus-4-7": {"input": 5.00, "output": 25.00},
+    "us.anthropic.claude-opus-4-8": {"input": 5.00, "output": 25.00},
     "us.anthropic.claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": {"input": 1.00, "output": 5.00},
 }

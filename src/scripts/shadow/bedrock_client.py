@@ -33,10 +33,22 @@ def _is_throttling_error(exc):
 # any call path), so the helper only strips `temperature`; if a future
 # caller starts setting top_p / top_k, the helper signature and the strip
 # branch must be extended in lockstep.
-# Anchored at a non-digit boundary so `claude-opus-4-7` and
-# `claude-opus-4-7-mini-*` match but a hypothetical `opus-4-70` does not.
-# Extend this pattern when a new family rejects sampling params.
-_NO_SAMPLING_PARAMS_PATTERN = re.compile(r"opus-4-7(?!\d)")
+# Model families that reject sampling params (temperature) on Bedrock Converse:
+# Opus 4.7/4.8/4.9 and single-digit Opus/Sonnet majors >= 5. Every alternative
+# is boundary-anchored with (?!\d) so it matches the whole version token and
+# never substring-matches a larger number or a date suffix — `opus-4-70`,
+# `opus-50`, `sonnet-20240229` (Claude 3, which accepts temperature) do NOT
+# match. Kept to single-digit majors deliberately: a hypothetical two-digit
+# major (opus-10) is not enumerated here, but this is a best-effort fast path,
+# NOT the only safeguard — converse() retries without sampling params if a model
+# reports the param rejected (see _converse_with_retry), so any family missing
+# here still degrades gracefully (one extra call + a warning) instead of
+# hard-failing. Add new families here to skip that retry.
+_NO_SAMPLING_PARAMS_PATTERN = re.compile(
+    r"opus-4-[7-9](?!\d)"
+    r"|opus-[5-9](?!\d)"
+    r"|sonnet-[5-9](?!\d)"
+)
 
 
 def _build_inference_config(max_tokens, temperature, model_id):
@@ -48,6 +60,19 @@ def _build_inference_config(max_tokens, temperature, model_id):
         return cfg
     cfg["temperature"] = temperature
     return cfg
+
+
+def _is_sampling_deprecated_error(exc):
+    """True if a Bedrock error says a sampling param (temperature/top_p/top_k)
+    is deprecated/unsupported for the model — the signal to retry without it.
+    Matches on message text because Bedrock returns a generic ValidationException
+    for this, not a distinct code."""
+    msg = str(getattr(exc, "response", "") or exc).lower()
+    rejected = ("deprecated" in msg or "not supported" in msg
+                or "unsupported" in msg or "not allowed" in msg)
+    return rejected and (
+        "temperature" in msg or "top_p" in msg or "top_k" in msg or "sampling" in msg
+    )
 
 
 class BedrockClient:
@@ -91,6 +116,26 @@ class BedrockClient:
                 retries={"max_attempts": 1, "mode": "standard"},
             ),
         )
+
+    def _converse_with_retry(self, client, kwargs):
+        """Call converse(); if the model rejects a sampling param as deprecated,
+        strip temperature from inferenceConfig and retry once. Backstops the
+        _NO_SAMPLING_PARAMS_PATTERN fast path so a newer model missing from that
+        list degrades gracefully instead of hard-failing every call."""
+        try:
+            return client.converse(**kwargs)
+        except (ClientError, BotoCoreError) as e:
+            ic = kwargs.get("inferenceConfig") or {}
+            if "temperature" in ic and _is_sampling_deprecated_error(e):
+                logger.warning(
+                    "Model %s rejects sampling params; retrying without temperature "
+                    "(add its family to _NO_SAMPLING_PARAMS_PATTERN)",
+                    kwargs.get("modelId"),
+                )
+                retry = dict(kwargs)
+                retry["inferenceConfig"] = {k: v for k, v in ic.items() if k != "temperature"}
+                return client.converse(**retry)
+            raise
 
     def is_model_available(self, model_id):
         return (model_id or self._model_id) not in self._open_models
@@ -227,7 +272,7 @@ class BedrockClient:
                     "trace": "enabled",
                 }
 
-            resp = self._client.converse(**kwargs)
+            resp = self._converse_with_retry(self._client, kwargs)
 
             if resp.get("stopReason") == "guardrail_intervened":
                 logger.warning("Guardrail intervened: %s", resp.get("trace", ""))
@@ -299,7 +344,7 @@ class BedrockClient:
                     "trace": "enabled",
                 }
             client = self._client_for_timeout(timeout_seconds)
-            resp = client.converse(**kwargs)
+            resp = self._converse_with_retry(client, kwargs)
             if resp.get("stopReason") == "guardrail_intervened":
                 logger.warning("Guardrail intervened: %s", resp.get("trace", ""))
                 self._record_guardrail(effective_model)
@@ -366,7 +411,7 @@ class BedrockClient:
                     "guardrailVersion": self._guardrail_version,
                     "trace": "enabled",
                 }
-            resp = self._client.converse(**kwargs)
+            resp = self._converse_with_retry(self._client, kwargs)
             if resp.get("stopReason") == "guardrail_intervened":
                 logger.warning("Guardrail intervened on tool-use turn: %s", resp.get("trace", ""))
                 self._record_guardrail(effective_model)
