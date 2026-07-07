@@ -209,9 +209,12 @@ class Config:
         self.max_context_chars = 800000
         self.max_github_search_results = 8
         self.github_api_timeout = 10
-        self.allowed_labels = {
-            "bug", "enhancement", "question", "documentation", "help-wanted",
-        }
+        # Extensible so adopters can allow repo-specific labels (e.g. python, java).
+        self.allowed_labels = _parse_allowed_labels(
+            os.getenv("BOT_ALLOWED_LABELS"),
+            shadow_config.get(yml, "bot", "allowed_labels"),
+            _DEFAULT_ALLOWED_LABELS,
+        )
 
         # Default ON. BOT_AGENT_PIPELINE=0 makes PR events ESCALATE with
         # reason `pipeline_disabled`; issue/followup paths still run their
@@ -324,6 +327,33 @@ def _scrub_label(val, default):
     if not val:
         return default
     return val[:50]
+
+
+_DEFAULT_ALLOWED_LABELS = frozenset({
+    "bug", "enhancement", "question", "documentation", "help-wanted",
+})
+
+
+def _parse_allowed_labels(env_val, yaml_val, default):
+    """env (comma-separated) > yaml (list) > default. Entries are scrubbed like
+    posted labels; an empty/all-garbage result falls back to `default` rather
+    than silently disabling labeling."""
+    items = None
+    if env_val is not None and env_val.strip():
+        items = env_val.split(",")
+    elif isinstance(yaml_val, (list, tuple)):
+        items = yaml_val
+    elif isinstance(yaml_val, str) and yaml_val.strip():
+        # tolerate a scalar yaml string ("python,java") like the env form
+        items = yaml_val.split(",")
+    if items is None:
+        return set(default)
+    _sentinel = object()
+    scrubbed = {
+        lbl for lbl in (_scrub_label(x, _sentinel) for x in items)
+        if lbl is not _sentinel
+    }
+    return scrubbed or set(default)
 
 
 def _int_in_range_or_default(val, default, *, name):

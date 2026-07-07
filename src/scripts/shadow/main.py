@@ -221,9 +221,10 @@ def analyze():
         if recent is not None and recent >= cfg.max_runs_per_hour:
             logger.warning("Rate limit hit on #%s: %d runs in last hour (cap %d)",
                            number, recent, cfg.max_runs_per_hour)
+            # act() adds the branded rate-limit label (keyed on this reason).
             _write_artifact({
                 "action": "ESCALATE",
-                "labels": [cfg.escalate_label, "shadow:rate-limited"],
+                "labels": [cfg.escalate_label],
                 "response": "",
                 "reason": "rate_limited",
                 "title": title, "html_url": html_url, "number": number, "is_pr": is_pr,
@@ -584,6 +585,12 @@ def act():
         escalate_labels = list(labels)
         if cfg.escalate_label and cfg.escalate_label not in escalate_labels:
             escalate_labels.append(cfg.escalate_label)
+        # Appended after the filter (like escalate_label): engine-generated, so
+        # not subject to the model-proposed-label allowlist. Branded with bot_name.
+        if reason == "rate_limited":
+            rate_label = f"{cfg.bot_name}:rate-limited"
+            if rate_label not in escalate_labels:
+                escalate_labels.append(rate_label)
         posted_status = {
             "comment": bool(gh.post_comment(number, ack)),
             "labels": bool(gh.add_labels(number, escalate_labels)),
