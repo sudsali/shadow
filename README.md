@@ -187,6 +187,11 @@ bot:
   escalate_label: needs-human       # must already exist in your repo's Labels
   max_replies: 2                    # 0..100; cap on followup replies before next user comment ESCALATEs
   max_runs_per_hour: 20             # 0..100; per-(repo, item) rate limit; 0 disables
+  allowed_labels:                   # labels issue-triage may apply; defaults to bug/enhancement/question/documentation/help-wanted. Add repo-specific labels here (they must exist in your repo's Labels).
+    - bug
+    - enhancement
+    - question
+    - documentation
 
 # Override per-stage models if you want a different cost/quality trade-off.
 # Env vars BEDROCK_MODEL_ID / BEDROCK_REPORTER_MODEL_ID / BEDROCK_CRITIC_MODEL_ID /
@@ -213,7 +218,8 @@ models:
 | `BOT_REPORTER_MIN_REMAINING_S` | `60` | Reporter is pre-empted if less than this remains. |
 | `BOT_MAX_DIFF_FOR_REVIEW_CHARS` | `100000` | Pre-flight diff cap. Diff above this → ESCALATE before any Bedrock call. |
 | `BOT_MAX_FILES_FOR_REVIEW` | `50` | Pre-flight file-count cap. Same shape as above. |
-| `BOT_MAX_RUNS_PER_HOUR` | `20` | Per-(repo, item) hourly run cap. `0` disables. Capped at `100`; values above clamp with a warning. Negative values fall back to default. Hit → ESCALATE with `shadow:rate-limited` label. |
+| `BOT_MAX_RUNS_PER_HOUR` | `20` | Per-(repo, item) hourly run cap. `0` disables. Capped at `100`; values above clamp with a warning. Negative values fall back to default. Hit → ESCALATE with a `<bot.name>:rate-limited` label. |
+| `BOT_ALLOWED_LABELS` | `bug,enhancement,question,documentation,help-wanted` | Comma-separated allowlist of labels issue-triage may apply (also settable as a list under `.shadow.yml` `bot.allowed_labels`). Model-proposed labels outside the set are dropped. Empty/garbage falls back to the default. |
 | `BOT_MAX_REPLIES` | `2` | Followup-reply cap per (issue, PR). Capped at `100`; negative falls back to default. |
 | `BOT_GITHUB_ACTOR` | `github-actions[bot]` | GitHub login Shadow's comments appear under. **Set this to a unique value** if your repo has other workflows that also post as `github-actions[bot]` (e.g., PR-overlap detectors, claim-checkers). Otherwise Shadow's `already_commented` dedup matches their comments and silently SKIPs every PR. |
 | `BOT_REQUIRE_GUARDRAIL` | `true` | Production runs (`DRY_RUN=false`) refuse to start when `GUARDRAIL_ID` is unset — Shadow won't run without prompt-injection defense. On the reusable workflow, drive this via the `require_guardrail` **input** (`with: require_guardrail: 'false'`) — accepts `0`/`false`/`no`/`off`. `DRY_RUN=true` bypasses the gate regardless. |
@@ -411,7 +417,7 @@ Every analyze run writes a `shadow_result.json` artifact, retained 7 days by Git
 
 The per-PR levers (under [What it costs](#what-it-costs)) bound a single review. These three guards bound **fleet-wide** spend, defending against PR/issue spam and runaway traffic:
 
-- **Per-(repo, item) hourly rate limit** (`BOT_MAX_RUNS_PER_HOUR`, default `20`). Caps how many times a single PR or issue can trigger Shadow per rolling hour. Beyond the limit, the bot ESCALATES with the `shadow:rate-limited` label instead of running the agent pipeline. Defends against an adversary closing/reopening or editing a PR title in a loop. Set to `0` to disable. **Issue/issue_comment events** require `run-name: "Shadow #${{ github.event.issue.number || ... }}"` in your caller workflow so the rate-limit gate can match prior runs (see [`examples/caller-workflow.yml`](examples/caller-workflow.yml)).
+- **Per-(repo, item) hourly rate limit** (`BOT_MAX_RUNS_PER_HOUR`, default `20`). Caps how many times a single PR or issue can trigger Shadow per rolling hour. Beyond the limit, the bot ESCALATES with a `<bot.name>:rate-limited` label instead of running the agent pipeline. Defends against an adversary closing/reopening or editing a PR title in a loop. Set to `0` to disable. **Issue/issue_comment events** require `run-name: "Shadow #${{ github.event.issue.number || ... }}"` in your caller workflow so the rate-limit gate can match prior runs (see [`examples/caller-workflow.yml`](examples/caller-workflow.yml)).
 - **Pre-flight diff/file caps** (`BOT_MAX_DIFF_FOR_REVIEW_CHARS`, `BOT_MAX_FILES_FOR_REVIEW`, defaults `100000` / `50`). A 50-file PR makes the Investigator read 5+ files, the Critic re-reads, the Reporter formats — costs multiply. Diff or file count above the cap → ESCALATE before any Bedrock call. Pre-flight escalation is ~$0; a runaway pipeline on a giant PR is $5+.
 - **AWS Budgets opt-in via CFN** (`MonthlyBudgetLimit` parameter on `shadow-iam-stack.yaml`). Set a positive USD amount + a `BudgetEmailAddress` and the stack creates an `AWS::Budgets::Budget` filtered to Amazon Bedrock spend, with email alerts at 80% and 100%. `0` skips Budget creation (default — AWS Budgets bills $0.02/budget/day, so opt-in only). Email-only today; auto-shutdown via `SHADOW_DISABLED` is a planned upgrade.
 
