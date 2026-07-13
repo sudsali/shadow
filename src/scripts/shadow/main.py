@@ -2033,8 +2033,11 @@ def _build_provenance_from_env():
     overrides are not visible here — this path has no Config; those artifacts are
     the cheap SKIP/ESCALATE ones, and the full path uses _build_provenance(cfg).)"""
     # Mirror Config's defaults from the single source of truth so a future
-    # default-model bump can't drift this early-exit path out of sync.
-    investigator = os.getenv("BEDROCK_MODEL_ID", _DEFAULT_MODEL)
+    # default-model bump can't drift this early-exit path out of sync. Use the
+    # `(getenv or "").strip() or default` idiom on every line so an empty or
+    # whitespace env value falls back to the default, matching Config.env_or
+    # (a bare `getenv(name, default)` would stamp "" when the var is set-empty).
+    investigator = (os.getenv("BEDROCK_MODEL_ID") or "").strip() or _DEFAULT_MODEL
     reporter = (os.getenv("BEDROCK_REPORTER_MODEL_ID") or "").strip() or _DEFAULT_REPORTER_MODEL
     return {
         "schema_version": 1,

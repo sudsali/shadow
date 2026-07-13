@@ -386,7 +386,7 @@ You're letting a bot read your repo and post on your behalf. Here's the trust bo
 
 Pick the trade-off:
 
-- **`@v1.8`** (numbered release tag) — a specific, immutable version. Bump it yourself when you want a newer one. **Recommended starting point** — readable, and it won't change under you. Browse the [Releases page](https://github.com/sudsali/shadow/releases) for the changelog.
+- **`@v1.8`** (numbered release tag) — a specific version, fixed by release convention (not force-moved like `v0` was). Bump it yourself when you want a newer one. **Recommended starting point** — readable and stable. Note a tag is not cryptographically immutable — it *can* be re-pointed by whoever controls the source repo — so for the strongest guarantee, pin the SHA below. Browse the [Releases page](https://github.com/sudsali/shadow/releases) for the changelog.
 - **`@<40-char SHA>`** — frozen at the exact commit you audited. Strongest supply-chain guarantee (a tag *could* in principle be re-pointed; a SHA can't). **Recommended for production.** Add a Dependabot config so SHA/tag bumps land as PRs you can review:
   ```yaml
   # .github/dependabot.yml — bumps @<SHA> and @v1.x pins as reviewable PRs
@@ -398,7 +398,7 @@ Pick the trade-off:
   ```
 - **Fork into your org and pin to your fork's SHA** — full org control. Recommended when your trust boundary is the org, not an individual GitHub account.
 
-> **Versioning.** Shadow ships as numbered releases on the `v1.x` track (`v1.6`, `v1.7`, `v1.8`, …) — each an immutable tag with a matching [GitHub Release](https://github.com/sudsali/shadow/releases). Pin to a specific `v1.x` tag (or its SHA) and bump deliberately; nothing moves under you. The old `@v0` "latest" tag is **frozen** at its final pre-`v1.x` revision and no longer advances — if you pinned `@v0`, move to a numbered tag to get current fixes. SHA-pinned adopters are unaffected either way.
+> **Versioning.** Shadow ships as numbered releases on the `v1.x` track (`v1.6`, `v1.7`, `v1.8`, …) — each a fixed tag (not force-moved) with a matching [GitHub Release](https://github.com/sudsali/shadow/releases). Pin to a specific `v1.x` tag (or, for a guarantee no tag re-point can break, its SHA) and bump deliberately. The old `@v0` "latest" tag is **frozen** at its final pre-`v1.x` revision and no longer advances — if you pinned `@v0`, move to a numbered tag to get current fixes. SHA-pinned adopters are unaffected either way.
 
 ---
 

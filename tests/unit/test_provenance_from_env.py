@@ -45,6 +45,22 @@ def test_opus_investigator_does_not_drag_reporter_or_issue_to_opus(monkeypatch):
     assert mo["issue"] == _HAIKU
 
 
+@pytest.mark.parametrize("empty_value", ["", "   "])
+def test_empty_or_whitespace_env_falls_back_to_defaults(monkeypatch, empty_value):
+    # A set-but-empty/whitespace env var (e.g. `${{ secrets.X }}` where X is
+    # unset -> GitHub passes "") must fall back to the default on EVERY stage,
+    # matching Config.env_or. Guards the investigator line specifically: a bare
+    # `getenv(name, default)` would stamp "" here while runtime resolves the
+    # real default, mislabeling the audit provenance.
+    for var in _MODEL_ENVS:
+        monkeypatch.setenv(var, empty_value)
+    mo = _models()
+    assert mo["investigator"] == _OPUS
+    assert mo["critic"] == _OPUS
+    assert mo["reporter"] == _HAIKU
+    assert mo["issue"] == _HAIKU
+
+
 def test_issue_follows_reporter_env(monkeypatch):
     monkeypatch.setenv("BEDROCK_REPORTER_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
     assert _models()["issue"] == "us.anthropic.claude-sonnet-4-6"

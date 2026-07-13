@@ -1,6 +1,6 @@
-# Version-pinned for reproducibility. Production hardening (planned):
-# regenerate with `pip-compile --generate-hashes` and call `pip install
-# --require-hashes` in the workflow to defend against PyPI compromise.
+# Version-pinned for reproducibility. Not hash-pinned yet: to defend against
+# PyPI compromise, regenerate with `pip-compile --generate-hashes` and call
+# `pip install --require-hashes` in the workflow.
 requests==2.33.1
 boto3==1.42.94
 PyYAML==6.0.2

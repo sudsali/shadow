@@ -65,10 +65,11 @@ Parameters:
     Description: >-
       `job_workflow_ref` pin for Shadow's reusable workflow. Use `*` for
       a quick start (any version of the workflow can assume this role).
-      For production, pin to a release tag or an audited 40-char SHA:
-      `refs/tags/v1.8` or `<commit-sha>`. A trailing wildcard (e.g.
-      `refs/tags/v1.*`) lets the same role work across Shadow releases
-      until you re-pin.
+      For production, pin to a specific release tag or an audited 40-char
+      SHA: `refs/tags/v1.8` or `<commit-sha>`. Avoid a family wildcard like
+      `refs/tags/v1.*` for the trust pin — it auto-trusts every FUTURE v1.x
+      tag, including one an attacker who compromised upstream could push, so
+      it defeats the point of pinning. A SHA is strongest (immutable).
     Default: "*"
     MinLength: 1
     MaxLength: 200
