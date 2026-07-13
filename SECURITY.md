@@ -14,7 +14,7 @@ The bot's privileged operations are:
    inputs include the diff, codebase tree, and existing PR/issue comments.
 2. **Posting on GitHub as the workflow's bot identity** — inline review
    comments, labels, optional Slack pings.
-3. **Calling Bedrock from your AWS account** — Anthropic Opus 4.7 + Haiku 4.5
+3. **Calling Bedrock from your AWS account** — Anthropic Opus 4.8 + Haiku 4.5
    inferences, scoped to your IAM role's permissions.
 
 ### Adversaries
@@ -25,9 +25,11 @@ The bot's privileged operations are:
   workflow file, or Shadow source.
 - **Existing-repo collaborator.** Same as above plus can author issue/comment
   content under any GitHub login the bot is configured to recognize.
-- **Compromised upstream `sudsali/shadow`.** A malicious commit to the moving
-  `v0` tag would propagate to every adopter pinning `@v0` on their next workflow
-  run. Adopters who SHA-pin (`@<40-char SHA>`) are insulated.
+- **Compromised upstream `sudsali/shadow`.** A `v1.x` release tag is immutable
+  by convention, but a tag *can* be force-repointed at the source repo; if that
+  happened, adopters pinning that tag (`@v1.8`) would pick up the malicious
+  revision on their next workflow run. Adopters who SHA-pin (`@<40-char SHA>`)
+  are insulated — a SHA cannot be repointed.
 - **Compromised Anthropic / AWS Bedrock.** Out of scope; same trust boundary
   as the adopter's other Bedrock usage.
 

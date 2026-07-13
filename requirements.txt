@@ -1,4 +1,4 @@
-# Version-pinned for reproducibility. Production hardening (post-v0):
+# Version-pinned for reproducibility. Production hardening (planned):
 # regenerate with `pip-compile --generate-hashes` and call `pip install
 # --require-hashes` in the workflow to defend against PyPI compromise.
 requests==2.33.1

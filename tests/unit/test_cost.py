@@ -79,7 +79,8 @@ def test_cache_writes_are_one_point_two_five_input_price():
 
 def test_unknown_model_falls_back_to_opus_pricing():
     """Adopter who overrides BEDROCK_MODEL_ID to something unrecognized still
-    gets a cost number — pricing table fallback to Opus 4.7."""
+    gets a cost number — pricing table fallback to the default model (Opus,
+    $5/1M input)."""
     stage = {
         "skipped": False, "model_id": "anthropic.claude-9000-not-yet",
         "input_tokens": 1_000_000, "output_tokens": 0,

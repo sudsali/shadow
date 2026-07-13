@@ -7,7 +7,7 @@ import pytest
 
 from shadow import main as m
 
-_OPUS = "us.anthropic.claude-opus-4-7"
+_OPUS = "us.anthropic.claude-opus-4-8"
 _HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 _MODEL_ENVS = ("BEDROCK_MODEL_ID", "BEDROCK_REPORTER_MODEL_ID",
                "BEDROCK_CRITIC_MODEL_ID", "BEDROCK_ISSUE_MODEL_ID")

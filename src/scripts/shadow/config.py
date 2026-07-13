@@ -11,7 +11,7 @@ logger = logging.getLogger("shadow")
 
 # Built-in default model. Module-level so the cost-pricing test can assert
 # the pricing table covers it without re-encoding the literal in two places.
-_DEFAULT_MODEL = "us.anthropic.claude-opus-4-7"
+_DEFAULT_MODEL = "us.anthropic.claude-opus-4-8"
 # Reporter built-in default. Haiku because the Reporter is JSON-formatting
 # only — Opus's reasoning depth is wasted there, and Haiku is the model
 # documented as the default in the README.
@@ -40,8 +40,8 @@ class Config:
             _DEFAULT_MODEL,
         ), _DEFAULT_MODEL)
         # Reporter is JSON-formatting only; Haiku handles structured output
-        # well enough AND is the model the issue path REQUIRES (Opus 4.7
-        # rejects outputConfig.textFormat over Bedrock today). Adopters who
+        # well enough AND is the model the issue path REQUIRES (Opus 4.7/4.8
+        # reject outputConfig.textFormat over Bedrock today). Adopters who
         # override BEDROCK_MODEL_ID (Investigator) without setting Reporter
         # silently get Haiku here — log loud at INFO so the asymmetry is
         # visible in workflow logs rather than discovered via "why does my

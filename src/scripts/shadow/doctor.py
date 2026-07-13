@@ -117,12 +117,14 @@ def _check_bedrock_access(args, result):
     # which model families reject sampling params.
     from .bedrock_client import _build_inference_config
     from . import shadow_config
+    from .config import _DEFAULT_MODEL, _DEFAULT_REPORTER_MODEL
     # Validate the models the adopter actually configured, not hardcoded ones —
-    # otherwise doctor greens an install whose real model (e.g. an Opus 4.8
+    # otherwise doctor greens an install whose real model (e.g. a Sonnet 4.6
     # override) is unreachable. Resolve exactly as Config does: env > .shadow.yml
-    # > default, so a yaml-only override is validated too.
-    _default_opus = "us.anthropic.claude-opus-4-7"
-    _default_haiku = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    # > default, so a yaml-only override is validated too. Defaults come from
+    # config so a default-model bump can't drift doctor out of sync.
+    _default_opus = _DEFAULT_MODEL
+    _default_haiku = _DEFAULT_REPORTER_MODEL
     yml = shadow_config.load(args.repo_root or os.getenv("SHADOW_REPO_ROOT", "."))
     investigator = shadow_config.env_or(
         "BEDROCK_MODEL_ID", shadow_config.get(yml, "models", "investigator"), _default_opus)
