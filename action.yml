@@ -14,11 +14,11 @@ branding:
 # and forwards to the reusable workflow; all real work happens there.
 #
 # Adopters can use either shape:
-#   uses: sudsali/shadow@v0
+#   uses: sudsali/shadow@v1.8
 #     with:
 #       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
 # or directly:
-#   uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
+#   uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.8
 #     secrets:
 #       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 #
@@ -60,9 +60,9 @@ inputs:
     required: false
     default: "false"
   shadow_ref:
-    description: Pin to a Shadow release (`v0` or a 40-char SHA).
+    description: Pin to a Shadow release (a `v1.x` tag or a 40-char SHA).
     required: false
-    default: "v0"
+    default: "v1.8"
 
 outputs:
   shadow_result:
@@ -79,13 +79,13 @@ outputs:
 #
 #   jobs:
 #     shadow:
-#       uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
+#       uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.8
 #
 # When GitHub Actions adds composite-to-reusable-workflow chaining
 # (https://github.com/orgs/community/discussions/56086), this file flips
 # from stub to real wrapper. Until then, this exists so:
 #   1. Marketplace search finds Shadow
-#   2. `uses: sudsali/shadow@v0` doesn't 404
+#   2. `uses: sudsali/shadow@v1.8` doesn't 404
 #   3. The branding badge renders on PRs
 runs:
   using: "composite"

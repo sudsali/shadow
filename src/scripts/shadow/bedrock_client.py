@@ -229,7 +229,7 @@ class BedrockClient:
             write premium with zero reuse. Issue/followup callers pass True
             since their prefix is KB + codebase_map, stable across calls.
         - model_id: override the default model for this call. Issue triage
-            uses Haiku because Opus 4.7 doesn't accept outputConfig.textFormat
+            uses Haiku because Opus (4.7/4.8) doesn't accept outputConfig.textFormat
             (structured output) over Bedrock today; Haiku does.
         """
         target_model = model_id or self._model_id

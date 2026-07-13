@@ -82,6 +82,28 @@ def _clear_model_env(monkeypatch):
         monkeypatch.delenv(v, raising=False)
 
 
+def test_defaults_resolve_to_builtin_models(monkeypatch):
+    """A bare Config() (no env, no yaml) must resolve the reasoning stages to
+    _DEFAULT_MODEL and the reporter/issue stages to _DEFAULT_REPORTER_MODEL.
+    Asserts against the constants (not literals) so it survives a deliberate
+    default bump, but still catches a silent wiring regression — a stale
+    literal on the env_or line, _scrub_model_id mangling a clean default, or
+    env_or's 3rd-arg being dropped — that test_provenance_from_env (which
+    guards main.py's separate os.getenv path) would not."""
+    _set_required_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SHADOW_REPO_ROOT", tmp)
+        from shadow.config import (
+            Config, _DEFAULT_MODEL, _DEFAULT_REPORTER_MODEL,
+        )
+        cfg = Config()
+        assert cfg.bedrock_model_id == _DEFAULT_MODEL
+        assert cfg.critic_model_id == _DEFAULT_MODEL          # critic follows investigator
+        assert cfg.reporter_model_id == _DEFAULT_REPORTER_MODEL
+        assert cfg.issue_model_id == _DEFAULT_REPORTER_MODEL  # issue follows reporter
+
+
 def test_yaml_models_block_overrides_per_stage(monkeypatch):
     """models.investigator/critic/reporter in .shadow.yml should override
     the built-in defaults — adopters tune cost/quality without env vars."""

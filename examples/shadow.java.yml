@@ -10,6 +10,6 @@ bot:
   escalate_label: needs-human
 
 models:
-  investigator: us.anthropic.claude-opus-4-7
-  critic: us.anthropic.claude-opus-4-7
+  investigator: us.anthropic.claude-opus-4-8
+  critic: us.anthropic.claude-opus-4-8
   reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0

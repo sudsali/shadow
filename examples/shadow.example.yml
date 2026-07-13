@@ -20,8 +20,8 @@ bot:
 # Env vars (BEDROCK_MODEL_ID, BEDROCK_REPORTER_MODEL_ID, BEDROCK_CRITIC_MODEL_ID)
 # take precedence over yaml.
 models:
-  investigator: us.anthropic.claude-opus-4-7
-  critic: us.anthropic.claude-opus-4-7
+  investigator: us.anthropic.claude-opus-4-8
+  critic: us.anthropic.claude-opus-4-8
   reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0   # PR-review JSON formatting
   # issue: <model>   # issue/followup answers; defaults to `reporter`. Must
   #                  # support structured output (Haiku 4.5 or Sonnet 4.6).

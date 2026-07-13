@@ -23,7 +23,7 @@ Metadata:
       GitHubOrg:           { default: "Your GitHub org or user (e.g., awslabs, sudsali)" }
       GitHubRepo:          { default: "Your repo name (use * for org-wide; audit first)" }
       ShadowSourceRepo:    { default: "Shadow source repo (sudsali/shadow upstream, or your fork)" }
-      ShadowWorkflowRef:   { default: "Shadow workflow ref pin (use * for v0; SHA for prod)" }
+      ShadowWorkflowRef:   { default: "Shadow workflow ref pin (use * for quick start; tag or SHA for prod)" }
       BedrockRegion:       { default: "Bedrock region (us-east-1, us-west-2, us-east-2)" }
       MonthlyBudgetLimit:  { default: "Monthly Bedrock spend limit in USD (0 = disabled)" }
       BudgetEmailAddress:  { default: "Email for budget threshold notifications" }
@@ -65,9 +65,11 @@ Parameters:
     Description: >-
       `job_workflow_ref` pin for Shadow's reusable workflow. Use `*` for
       a quick start (any version of the workflow can assume this role).
-      For production, pin to a 40-char SHA you've audited:
-      `refs/tags/v0` or `<commit-sha>`. The trailing wildcard lets the
-      same role work across Shadow patch releases until you re-pin.
+      For production, pin to a specific release tag or an audited 40-char
+      SHA: `refs/tags/v1.8` or `<commit-sha>`. Avoid a family wildcard like
+      `refs/tags/v1.*` for the trust pin — it auto-trusts every FUTURE v1.x
+      tag, including one an attacker who compromised upstream could push, so
+      it defeats the point of pinning. A SHA is strongest (immutable).
     Default: "*"
     MinLength: 1
     MaxLength: 200

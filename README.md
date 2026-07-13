@@ -68,7 +68,7 @@ Three agents. The Investigator emits structured findings with hypothesis, eviden
 
 This is generator–verifier as the **core architecture**, not a re-rank step. A single agent can't disprove itself; the pipeline forces independent verification before anything reaches your repo.
 
-**Cost-aware model split:** Investigator and Critic run on Opus 4.7 (deep search + independent verification). Reporter runs on Haiku 4.5 (cheap structured-JSON formatting). The two reasoning stages dominate token spend; the Reporter is a thin formatting pass.
+**Cost-aware model split:** Investigator and Critic run on Opus 4.8 (deep search + independent verification). Reporter runs on Haiku 4.5 (cheap structured-JSON formatting). The two reasoning stages dominate token spend; the Reporter is a thin formatting pass.
 
 ---
 
@@ -104,7 +104,7 @@ permissions:
   issues: write
 jobs:
   shadow:
-    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v0
+    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.8
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
@@ -197,8 +197,8 @@ bot:
 # Env vars BEDROCK_MODEL_ID / BEDROCK_REPORTER_MODEL_ID / BEDROCK_CRITIC_MODEL_ID /
 # BEDROCK_ISSUE_MODEL_ID take precedence.
 models:
-  investigator: us.anthropic.claude-opus-4-7
-  critic: us.anthropic.claude-opus-4-7
+  investigator: us.anthropic.claude-opus-4-8
+  critic: us.anthropic.claude-opus-4-8
   reporter: us.anthropic.claude-haiku-4-5-20251001-v1:0   # PR-review JSON formatting only
   # issue: us.anthropic.claude-sonnet-4-6   # issue/followup answers; defaults to `reporter`.
   #                                          # Must support structured output (Haiku 4.5 / Sonnet 4.6).
@@ -224,9 +224,10 @@ models:
 | `BOT_GITHUB_ACTOR` | `github-actions[bot]` | GitHub login Shadow's comments appear under. **Set this to a unique value** if your repo has other workflows that also post as `github-actions[bot]` (e.g., PR-overlap detectors, claim-checkers). Otherwise Shadow's `already_commented` dedup matches their comments and silently SKIPs every PR. |
 | `BOT_REQUIRE_GUARDRAIL` | `true` | Production runs (`DRY_RUN=false`) refuse to start when `GUARDRAIL_ID` is unset — Shadow won't run without prompt-injection defense. On the reusable workflow, drive this via the `require_guardrail` **input** (`with: require_guardrail: 'false'`) — accepts `0`/`false`/`no`/`off`. `DRY_RUN=true` bypasses the gate regardless. |
 | `DRY_RUN` | `false` | When `true`, Shadow writes the artifact but doesn't post comments. Bypasses the `BOT_REQUIRE_GUARDRAIL` gate. |
-| `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-7` | Investigator model. |
-| `BEDROCK_REPORTER_MODEL_ID` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Reporter model. Default is Haiku because Bedrock's `outputConfig.textFormat` is Haiku-only over Converse today; Opus 4.7 rejects it. |
+| `BEDROCK_MODEL_ID` | `us.anthropic.claude-opus-4-8` | Investigator model. |
+| `BEDROCK_REPORTER_MODEL_ID` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Reporter model. Default is Haiku because Bedrock's `outputConfig.textFormat` is Haiku-only over Converse today; Opus 4.7/4.8 reject it. |
 | `BEDROCK_CRITIC_MODEL_ID` | falls back to `BEDROCK_MODEL_ID` | Critic model. |
+| `BEDROCK_ISSUE_MODEL_ID` | falls back to `BEDROCK_REPORTER_MODEL_ID` | Issue/followup answer model. Decoupled from the PR Reporter so you can answer issues on a stronger model while keeping PR-review JSON formatting cheap. **Must support structured output** — Haiku 4.5 or Sonnet 4.6 (Opus 4.7/4.8 and Sonnet 5 reject it). |
 | `GUARDRAIL_ID` / `GUARDRAIL_VERSION` | unset | Bedrock Guardrail ID + version. **The CFN Launch Stack provisions one by default**; copy the `GuardrailId`/`GuardrailVersion` outputs into these repo secrets after stack deploy. **Required for production runs** — with `require_guardrail` defaulting to `true`, a `DRY_RUN=false` run refuses to start when these are unset (pass `require_guardrail: 'false'` under `with:` to opt out). When set, the guardrail wraps every Converse call as a server-side prompt-injection scanner on top of the local sanitizer + prompt constraints. |
 | `KB_S3_BUCKET` / `KB_S3_KEY` | unset | Optional S3-hosted knowledge base appended to the Investigator's system prompt. Useful for project-specific conventions. The IAM role needs `s3:GetObject` on that bucket; CFN doesn't grant this — extend the role yourself. |
 | `SLACK_WEBHOOK_URL` | unset | Slack channel webhook for escalation pings. Set to a [Slack incoming webhook URL](https://api.slack.com/messaging/webhooks); the bot posts a one-line summary to that channel on every ESCALATE. |
@@ -242,7 +243,7 @@ Shadow ships language-agnostic default prompts (`prompts/*.txt`). To run your ow
 ```yaml
 jobs:
   shadow:
-    uses: sudsali/shadow/.github/workflows/shadow-review.yml@<sha>   # replace <sha> with an audited ref (or @v0)
+    uses: sudsali/shadow/.github/workflows/shadow-review.yml@<sha>   # replace <sha> with an audited ref (or a @v1.x tag)
     with:
       prompt_sm_prefix: my-bot        # SM namespace holding your prompts
       aws_region: us-east-1           # region of the secrets + Bedrock (match your CFN BedrockRegion)
@@ -278,7 +279,7 @@ Shadow is BYO-AWS today. The bot calls Bedrock from **your** account, you get th
 
 ### Recommended: one-click CloudFormation Launch Stack
 
-[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/sudsali/shadow/v0/infrastructure/shadow-iam-stack.yaml&stackName=shadow-bot)
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/sudsali/shadow/v1.8/infrastructure/shadow-iam-stack.yaml&stackName=shadow-bot)
 
 The button opens AWS Console with [`infrastructure/shadow-iam-stack.yaml`](infrastructure/shadow-iam-stack.yaml) pre-loaded. Fill in:
 
@@ -287,8 +288,8 @@ The button opens AWS Console with [`infrastructure/shadow-iam-stack.yaml`](infra
 | **GitHubOrg** | Your GitHub org or username |
 | **GitHubRepo** | Repo name. No default — pick one. Pass `*` only if you've audited every repo in the org. |
 | **ShadowSourceRepo** | `sudsali/shadow` (default) — or your fork's `owner/repo` if you maintain a hardened private copy |
-| **ShadowWorkflowRef** | `*` for quick start, or a 40-char SHA to pin trust to one audited revision |
-| **BedrockRegion** | Where Bedrock will be invoked. `us-east-1` / `us-west-2` / `us-east-2` are the validated combinations; other regions work if both Opus 4.7 and Haiku 4.5 are available there ([model-region matrix](https://docs.aws.amazon.com/bedrock/latest/userguide/models-regions.html)). The region you pick here must match where you enable model access in the next step. |
+| **ShadowWorkflowRef** | `*` for quick start, a `refs/tags/v1.x` release tag (e.g. `refs/tags/v1.8`), or a 40-char SHA to pin trust to one audited revision |
+| **BedrockRegion** | Where Bedrock will be invoked. `us-east-1` / `us-west-2` / `us-east-2` are the validated combinations; other regions work if both Opus 4.8 and Haiku 4.5 are available there ([model-region matrix](https://docs.aws.amazon.com/bedrock/latest/userguide/models-regions.html)). The region you pick here must match where you enable model access in the next step. |
 | **ExistingOidcProviderArn** | Leave blank if your account has no GitHub OIDC provider yet. **If your account already uses GitHub Actions OIDC, paste the existing provider ARN** (`aws iam list-open-id-connect-providers`). Leaving blank when one exists fails with `EntityAlreadyExists`. |
 | **MonthlyBudgetLimit** + **BudgetEmailAddress** | Optional. Set both to enable an AWS Budget that emails at 80% / 100% of the cap. `0` / blank skips the alarm. |
 | **ProvisionGuardrail** | Default `true`. Provisions a Bedrock Guardrail with prompt-attack defense + PII blocks (see [Security model](#security-model)). Set to `false` only if you maintain a custom guardrail and want to point Shadow at it via the `GUARDRAIL_ID`/`GUARDRAIL_VERSION` secrets. |
@@ -301,7 +302,7 @@ The stack creates the OIDC provider (if needed), an IAM role with the canonical 
 
 You still need to **enable Bedrock model access** (the stack can't do this for you):
 
-> AWS Console → Bedrock (in your `BedrockRegion`) → Model access → enable `anthropic.claude-opus-4-7` AND `anthropic.claude-haiku-4-5`. Auto-subscribes in ≤ 15 min.
+> AWS Console → Bedrock (in your `BedrockRegion`) → Model access → enable `anthropic.claude-opus-4-8` AND `anthropic.claude-haiku-4-5`. Auto-subscribes in ≤ 15 min.
 
 After the stack is up:
 
@@ -309,7 +310,7 @@ After the stack is up:
 python -m shadow.doctor --role-arn $ARN --region $REGION
 ```
 
-> **Heads-up on the template URL:** the Launch Stack button resolves `…/sudsali/shadow/v0/infrastructure/shadow-iam-stack.yaml` at click time. It tracks the moving `v0` tag. If you re-launch the stack later, AWS fetches whatever is at `v0` *then* — not what you saw before. For reproducible IAM provisioning, download the YAML at a specific SHA and upload it manually.
+> **Heads-up on the template URL:** the Launch Stack button resolves `…/sudsali/shadow/v1.8/infrastructure/shadow-iam-stack.yaml` at click time — pinned to the `v1.8` release tag, so it's stable as long as you use this button. If you bump to a newer Shadow release, grab that release's Launch Stack URL. For fully reproducible IAM provisioning, download the YAML at a specific SHA and upload it manually.
 
 ### Manual setup (alternative)
 
@@ -385,10 +386,10 @@ You're letting a bot read your repo and post on your behalf. Here's the trust bo
 
 Pick the trade-off:
 
-- **`@v0`** (moving tag) — auto-updates to whatever upstream tags as `v0` next. **Lowest friction; you don't control which version reviews your code.** Suitable for trying the bot.
-- **`@<40-char SHA>`** — frozen at the version you audited. Manual update required. **Recommended for production.** Add a Dependabot config so SHA bumps land as PRs you can review:
+- **`@v1.8`** (numbered release tag) — a specific version, fixed by release convention (not force-moved like `v0` was). Bump it yourself when you want a newer one. **Recommended starting point** — readable and stable. Note a tag is not cryptographically immutable — it *can* be re-pointed by whoever controls the source repo — so for the strongest guarantee, pin the SHA below. Browse the [Releases page](https://github.com/sudsali/shadow/releases) for the changelog.
+- **`@<40-char SHA>`** — frozen at the exact commit you audited. Strongest supply-chain guarantee (a tag *could* in principle be re-pointed; a SHA can't). **Recommended for production.** Add a Dependabot config so SHA/tag bumps land as PRs you can review:
   ```yaml
-  # .github/dependabot.yml — bumps @<SHA> pins; silently inert for @v0
+  # .github/dependabot.yml — bumps @<SHA> and @v1.x pins as reviewable PRs
   version: 2
   updates:
     - package-ecosystem: github-actions
@@ -397,7 +398,7 @@ Pick the trade-off:
   ```
 - **Fork into your org and pin to your fork's SHA** — full org control. Recommended when your trust boundary is the org, not an individual GitHub account.
 
-> **`v0` tag stability.** The `v0` tag is currently force-pushed as the project iterates — adopters pinning `@v0` get the latest revision on every workflow run. The first numbered release (`v1.0`) will freeze the tag-version contract: from then on, `v0` will not move and follow-on changes ship as semver releases (`v1.1`, `v1.2`, …). Until that release, treat `@v0` as "latest" semantics. SHA-pinned adopters are insulated from any tag movement.
+> **Versioning.** Shadow ships as numbered releases on the `v1.x` track (`v1.6`, `v1.7`, `v1.8`, …) — each a fixed tag (not force-moved) with a matching [GitHub Release](https://github.com/sudsali/shadow/releases). Pin to a specific `v1.x` tag (or, for a guarantee no tag re-point can break, its SHA) and bump deliberately. The old `@v0` "latest" tag is **frozen** at its final pre-`v1.x` revision and no longer advances — if you pinned `@v0`, move to a numbered tag to get current fixes. SHA-pinned adopters are unaffected either way.
 
 ---
 
@@ -440,13 +441,13 @@ If you previously tried to set `SHADOW_DISABLED` as a Secret rather than a Varia
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Could not assume role` from configure-aws-credentials | OIDC trust policy mismatch | Verify `sub` matches `repo:YOUR_ORG/YOUR_REPO:*` and `job_workflow_ref` includes the Shadow workflow path. Run `aws sts get-caller-identity` from a minimal workflow first. |
-| `AccessDeniedException` on Bedrock | Model access not enabled in region | AWS Console → Bedrock → Model access → enable Opus 4.7 + Haiku 4.5. |
-| `ValidationException` on Bedrock call | Wrong model ID format | Check `BEDROCK_MODEL_ID` is `us.anthropic.claude-opus-4-7` (no `-v1` suffix on 4.7). |
+| `AccessDeniedException` on Bedrock | Model access not enabled in region | AWS Console → Bedrock → Model access → enable Opus 4.8 + Haiku 4.5. |
+| `ValidationException` on Bedrock call | Wrong model ID format | Check `BEDROCK_MODEL_ID` is `us.anthropic.claude-opus-4-8` (no `-v1` suffix on 4.7/4.8). |
 | `BOT_REQUIRE_GUARDRAIL=true and DRY_RUN=false but GUARDRAIL_ID is unset`, run exits 1 | Production run started without a guardrail wired in | Paste the stack's `GuardrailId`/`GuardrailVersion` outputs into the `GUARDRAIL_ID`/`GUARDRAIL_VERSION` repo secrets and forward them in the caller workflow's `secrets:`. To run without one, pass `require_guardrail: 'false'` under `with:`. |
 | `AccessDeniedException` on `bedrock:ApplyGuardrail` | IAM role lacks `bedrock:ApplyGuardrail` for the configured guardrail | Manual-setup only — add the `bedrock:ApplyGuardrail` statement scoped to your guardrail ARN (see [Manual setup](#manual-setup-alternative)). The Launch Stack grants it automatically. |
 | `AccessDeniedException` on `secretsmanager:GetSecretValue` (or every PR/issue/followup escalates with `prompt_load_failed` after setting `prompt_sm_prefix`) | Using [BYO prompts](#bring-your-own-prompts) but the IAM role can't read the secrets | Add a `secretsmanager:GetSecretValue` statement scoped to `arn:aws:secretsmanager:<region>:<acct>:secret:<prefix>/*-prompt*` (covers all eight prompt secrets — the five `pr-*` plus `issue-classify`/`issue-respond`/`followup`). The CFN Launch Stack does NOT grant this — you extend the role. Also confirm the secrets exist in `aws_region`. |
 | `[WARN] SM prompt(s) configured but fell back to bundled defaults` from `shadow doctor` | An `SM_*` prompt secret is missing/unreadable/in the wrong region, so a commit prompt silently used the bundled default | Verify the secret names exist and the role has `GetSecretValue` in `aws_region`. Core prompts fail closed loudly; commit prompts fall back silently, which is why the doctor flags it. |
-| `Required prompt missing: prompts/pr-investigator.txt` | `@v0` (or pinned SHA) doesn't include `prompts/` | Verify the ref in `sudsali/shadow` includes the `prompts/` directory. If you forked, ensure your tag does too. |
+| `Required prompt missing: prompts/pr-investigator.txt` | pinned ref (`@v1.x` or SHA) doesn't include `prompts/` | Verify the ref in `sudsali/shadow` includes the `prompts/` directory. If you forked, ensure your tag does too. |
 | No comments posted, workflow green | `dry_run: true` | Set `dry_run: false` in caller-workflow inputs. |
 | Every PR escalates with `prompt_load_failed` | `prompts/` not present at the pinned `shadow_ref` | Same as above. |
 | `existing_feedback` always empty | Caller workflow missing `pull-requests: read` | Reusable workflow declares this; if you customized the caller, ensure permissions include `pull-requests: read`. |
