@@ -2,6 +2,7 @@
 names, resource names, and output names are a public contract — adopter
 docs reference them, and a downstream `Launch Stack` URL would break if
 they change."""
+import re
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,8 @@ def test_template_top_level_shape(doc):
     assert set(doc["Resources"].keys()) == {
         "GitHubOidcProvider", "ShadowBotRole", "ShadowMonthlyBudget",
         "ShadowGuardrail", "ShadowGuardrailVersion",
+        "ShadowAlarmTopic", "ShadowEscalationSpikeAlarm",
+        "ShadowInvocationSpikeAlarm",
     }
 
 
@@ -52,6 +55,7 @@ def test_required_parameters_present(doc):
                 "ShadowWorkflowRef", "BedrockRegion",
                 "ExistingOidcProviderArn",
                 "MonthlyBudgetLimit", "BudgetEmailAddress",
+                "EscalationSpikeThreshold", "InvocationSpikeThreshold",
                 "ProvisionGuardrail"}
     assert set(doc["Parameters"].keys()) == expected
 
@@ -60,7 +64,7 @@ def test_required_outputs_present(doc):
     # README points adopters at these output names.
     expected = {"ShadowRoleArn", "OidcProviderArn", "TrustPolicyScope",
                 "BedrockRegion", "NextSteps",
-                "GuardrailId", "GuardrailVersion"}
+                "GuardrailId", "GuardrailVersion", "AlarmTopicArn"}
     assert set(doc["Outputs"].keys()) == expected
 
 
@@ -155,6 +159,47 @@ def test_monthly_budget_resource_present_when_set(doc):
         assert n["Notification"]["ComparisonOperator"] == "GREATER_THAN"
         for sub in n["Subscribers"]:
             assert sub["SubscriptionType"] == "EMAIL"
+
+
+def test_behavioral_alarms_aggregate_the_emitted_metrics(doc):
+    """Each alarm must aggregate its metric across all dimension schemas via a
+    Metrics Insights SQL query. A bare MetricName (no Dimensions) or a SEARCH
+    expression is a dead/invalid alarm — the metric is emitted only WITH
+    dimensions, and CloudWatch rejects SEARCH in an alarm. Metric names are
+    cross-checked against cloudwatch.py so an emitter rename can't leave the
+    alarm targeting a metric that's never published."""
+    emitter_src = (
+        Path(__file__).resolve().parents[2]
+        / "src/scripts/shadow/cloudwatch.py"
+    ).read_text()
+    alarms = {
+        "ShadowEscalationSpikeAlarm": ("Escalations", "EscalationSpikeThreshold"),
+        "ShadowInvocationSpikeAlarm": ("Invocations", "InvocationSpikeThreshold"),
+    }
+    for name, (metric, threshold_param) in alarms.items():
+        # The metric the alarm targets must actually be emitted by the engine.
+        # Match _datum(<quote><metric><quote>) tolerating whitespace/quote style
+        # so a benign reformat of cloudwatch.py doesn't false-fail this.
+        assert re.search(rf'_datum\(\s*[\'"]{metric}[\'"]', emitter_src), \
+            f"{name} targets {metric}, which cloudwatch.py does not emit"
+        alarm = doc["Resources"][name]
+        assert alarm["Type"] == "AWS::CloudWatch::Alarm"
+        assert alarm["Condition"] == "CreateAlarms"
+        props = alarm["Properties"]
+        # A top-level MetricName with no Dimensions is the dead-alarm footgun.
+        assert "MetricName" not in props, f"{name} uses bare MetricName (dead-alarm risk)"
+        exprs = [m.get("Expression", "") for m in props.get("Metrics", [])]
+        joined = " ".join(exprs)
+        assert "SEARCH(" not in joined, f"{name} uses SEARCH (illegal in a CloudWatch alarm)"
+        assert "SELECT" in joined and "SUM(" in joined.upper(), \
+            f"{name} is not a SELECT SUM(...) Metrics Insights query"
+        assert f'"{metric}"' in joined, f"{name} does not aggregate {metric}"
+        # Threshold must be wired to this alarm's own parameter (not swapped).
+        assert props["Threshold"] == threshold_param, \
+            f"{name} Threshold is not !Ref {threshold_param}"
+        assert '"Shadow"' in joined, f"{name} not scoped to the Shadow namespace"
+        # Wired to the SNS topic. (_CfnLoader renders !Ref as the bare scalar.)
+        assert alarm["Properties"]["AlarmActions"] == ["ShadowAlarmTopic"]
 
 
 def test_shadow_source_repo_default_and_threading(doc):

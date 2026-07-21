@@ -1,6 +1,5 @@
-# Version-pinned for reproducibility. Not hash-pinned yet: to defend against
-# PyPI compromise, regenerate with `pip-compile --generate-hashes` and call
-# `pip install --require-hashes` in the workflow.
+# Version-pinned, not hash-pinned: judged disproportionate for 3 deps. To add
+# hash-pinning against a PyPI compromise: pip-compile --generate-hashes.
 requests==2.33.1
 boto3==1.42.94
 PyYAML==6.0.2

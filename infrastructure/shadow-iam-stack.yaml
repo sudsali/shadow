@@ -15,19 +15,21 @@ Metadata:
         Parameters: [ShadowSourceRepo, ShadowWorkflowRef]
       - Label: { default: "Bedrock region" }
         Parameters: [BedrockRegion]
-      - Label: { default: "Cost protection (optional)" }
-        Parameters: [MonthlyBudgetLimit, BudgetEmailAddress]
+      - Label: { default: "Cost protection & anomaly alarms (optional)" }
+        Parameters: [MonthlyBudgetLimit, BudgetEmailAddress, EscalationSpikeThreshold, InvocationSpikeThreshold]
       - Label: { default: "Prompt-injection guardrail" }
         Parameters: [ProvisionGuardrail]
     ParameterLabels:
-      GitHubOrg:           { default: "Your GitHub org or user (e.g., awslabs, sudsali)" }
-      GitHubRepo:          { default: "Your repo name (use * for org-wide; audit first)" }
-      ShadowSourceRepo:    { default: "Shadow source repo (sudsali/shadow upstream, or your fork)" }
-      ShadowWorkflowRef:   { default: "Shadow workflow ref pin (use * for quick start; tag or SHA for prod)" }
-      BedrockRegion:       { default: "Bedrock region (us-east-1, us-west-2, us-east-2)" }
-      MonthlyBudgetLimit:  { default: "Monthly Bedrock spend limit in USD (0 = disabled)" }
-      BudgetEmailAddress:  { default: "Email for budget threshold notifications" }
-      ProvisionGuardrail:  { default: "Provision a Bedrock Guardrail (recommended; default ON)" }
+      GitHubOrg:                { default: "Your GitHub org or user (e.g., awslabs, sudsali)" }
+      GitHubRepo:               { default: "Your repo name (use * for org-wide; audit first)" }
+      ShadowSourceRepo:         { default: "Shadow source repo (sudsali/shadow upstream, or your fork)" }
+      ShadowWorkflowRef:        { default: "Shadow workflow ref pin (use * for quick start; tag or SHA for prod)" }
+      BedrockRegion:            { default: "Bedrock region (us-east-1, us-west-2, us-east-2)" }
+      MonthlyBudgetLimit:       { default: "Monthly Bedrock spend limit in USD (0 = disabled)" }
+      BudgetEmailAddress:       { default: "Email for budget + anomaly-alarm notifications (also enables the alarms)" }
+      EscalationSpikeThreshold: { default: "Escalations/hour that trips the anomaly alarm (default 25)" }
+      InvocationSpikeThreshold: { default: "Invocations/hour that trips the anomaly alarm (default 100)" }
+      ProvisionGuardrail:       { default: "Provision a Bedrock Guardrail (recommended; default ON)" }
 
 Parameters:
   GitHubOrg:
@@ -102,9 +104,32 @@ Parameters:
   BudgetEmailAddress:
     Type: String
     Description: >-
-      Email to notify when monthly budget threshold is hit. Required only
-      if MonthlyBudgetLimit > 0.
+      Email to notify for budget threshold AND behavioral-anomaly alarms.
+      Supplying it provisions the anomaly alarms (see EscalationSpikeThreshold /
+      InvocationSpikeThreshold) regardless of MonthlyBudgetLimit; you must click
+      the SNS confirmation email for alerts to arrive. Leave blank to skip both.
     Default: ""
+
+  EscalationSpikeThreshold:
+    Type: Number
+    Description: >-
+      Fleet-wide Escalations/hour above which the anomaly alarm fires. Tune to
+      your traffic: escalations cover injection/abuse AND benign causes
+      (model/agent-stage failures, rate-limited retries, and every PR
+      when BOT_AGENT_PIPELINE=0), so set above your normal hourly escalation
+      volume to avoid paging on routine config.
+    Default: 25
+    MinValue: 1
+
+  InvocationSpikeThreshold:
+    Type: Number
+    Description: >-
+      Fleet-wide Invocations/hour above which the anomaly alarm fires. One
+      Invocation = one analyze run. BOT_MAX_RUNS_PER_HOUR caps per-(repo,item)
+      at 20, so a busy repo with several active PRs/issues can legitimately run
+      100+/hr — set above your expected fleet peak.
+    Default: 100
+    MinValue: 1
 
   ProvisionGuardrail:
     Type: String
@@ -127,6 +152,9 @@ Conditions:
     - !Not [!Equals [!Ref MonthlyBudgetLimit, 0]]
     - !Not [!Equals [!Ref BudgetEmailAddress, ""]]
   CreateGuardrail: !Equals [!Ref ProvisionGuardrail, "true"]
+  # Behavioral alarms reuse BudgetEmailAddress as the notification target, so
+  # they light up whenever an operator supplies an email (no extra knob).
+  CreateAlarms: !Not [!Equals [!Ref BudgetEmailAddress, ""]]
 
 Resources:
   GitHubOidcProvider:
@@ -369,6 +397,69 @@ Resources:
             - SubscriptionType: EMAIL
               Address: !Ref BudgetEmailAddress
 
+  ShadowAlarmTopic:
+    # Fan-out point so operators can add more subscribers (PagerDuty, extra
+    # emails) beyond the auto-subscribed BudgetEmailAddress.
+    Type: AWS::SNS::Topic
+    Condition: CreateAlarms
+    Properties:
+      TopicName: !Sub "shadow-bot-alarms-${GitHubOrg}"
+      # No KmsMasterKeyId: CloudWatch can't publish to an aws/sns-encrypted
+      # topic (can't grant the service principal on the managed key), and the
+      # payload is non-sensitive (metric counts + org name).
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref BudgetEmailAddress
+
+  ShadowEscalationSpikeAlarm:
+    # Metrics Insights SQL (not a fixed-dimension metric or SEARCH — both are
+    # dead/invalid here) so SUM spans every Repository/Pipeline/Reason schema.
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlarms
+    Properties:
+      AlarmName: !Sub "shadow-bot-escalation-spike-${GitHubOrg}"
+      AlarmDescription: >-
+        Fleet-wide Escalations exceeded the threshold in a 1-hour window —
+        possible prompt-injection/abuse burst, or a systemic failure (e.g.
+        model/agent-stage failures escalating many items). Check recent PR/issue
+        activity and the analyze-job logs before assuming an attack.
+      EvaluationPeriods: 1
+      Threshold: !Ref EscalationSpikeThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: esc_total
+          Label: EscalationsPerHourFleetWide
+          Expression: 'SELECT SUM("Escalations") FROM "Shadow"'
+          Period: 3600
+          ReturnData: true
+      AlarmActions:
+        - !Ref ShadowAlarmTopic
+
+  ShadowInvocationSpikeAlarm:
+    # Hourly-burst cost signal (faster than the monthly Budget); same
+    # Metrics-Insights-SQL aggregation as ShadowEscalationSpikeAlarm.
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlarms
+    Properties:
+      AlarmName: !Sub "shadow-bot-invocation-spike-${GitHubOrg}"
+      AlarmDescription: >-
+        Fleet-wide Invocations exceeded the threshold in a 1-hour window —
+        possible flood of public trigger events (issues/PRs) driving unexpected
+        Bedrock spend. Cross-check with BOT_MAX_RUNS_PER_HOUR and the Budget.
+      EvaluationPeriods: 1
+      Threshold: !Ref InvocationSpikeThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: inv_total
+          Label: InvocationsPerHourFleetWide
+          Expression: 'SELECT SUM("Invocations") FROM "Shadow"'
+          Period: 3600
+          ReturnData: true
+      AlarmActions:
+        - !Ref ShadowAlarmTopic
+
 Outputs:
   ShadowRoleArn:
     Description: >-
@@ -405,6 +496,14 @@ Outputs:
       Bedrock Guardrail version. Set this as the `GUARDRAIL_VERSION`
       repository secret. Numbered version is published immediately.
     Value: !GetAtt ShadowGuardrailVersion.Version
+
+  AlarmTopicArn:
+    Condition: CreateAlarms
+    Description: >-
+      SNS topic ARN for the behavioral-anomaly alarms. BudgetEmailAddress is
+      auto-subscribed (confirm the emailed link, or alerts never arrive);
+      subscribe additional endpoints (PagerDuty, extra emails) to this ARN.
+    Value: !Ref ShadowAlarmTopic
 
   NextSteps:
     Description: What to do after this stack succeeds.
