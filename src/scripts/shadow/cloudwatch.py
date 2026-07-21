@@ -4,7 +4,8 @@ Emits a small batch of Shadow operational metrics into the adopter's AWS
 account so they can graph Shadow as part of their existing observability.
 Best-effort: a CloudWatch failure NEVER blocks the bot from posting findings.
 
-Dimensions: Repository (GITHUB_REPOSITORY), Pipeline (agentic).
+Dimensions: Repository (GITHUB_REPOSITORY), Pipeline, and Reason (the
+action/skip cause) on every datum where a reason is set.
 Namespace: Shadow (the CFN Launch Stack policy is scoped to this exact
 namespace via a `cloudwatch:namespace` condition; setting
 SHADOW_CLOUDWATCH_NAMESPACE to anything else requires updating the IAM
