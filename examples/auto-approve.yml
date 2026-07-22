@@ -1,0 +1,179 @@
+# Optional: auto-approve a PR once Shadow's review is clean AND CI passed.
+# OFF unless repo/org var SHADOW_AUTO_APPROVE=true (a bot approval can satisfy
+# branch protection's required review, so it stays opt-in). The split into
+# approve + emit jobs keeps Shadow's invariant that no one job holds both
+# GitHub-write and AWS access.
+# Replace "Java CI with Maven" with your CI workflow name (two places below).
+name: Auto-Approve Clean PRs
+
+on:
+  workflow_run:
+    workflows: ["Java CI with Maven", "Shadow"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  actions: read
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    if: vars.SHADOW_AUTO_APPROVE == 'true' && (github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'pull_request_target')
+    timeout-minutes: 2
+    outputs:
+      approved: ${{ steps.gate.outputs.approved }}
+      highrisk: ${{ steps.gate.outputs.highrisk }}
+    steps:
+      - name: Find PR and check both conditions
+        id: gate
+        env:
+          SHADOW_BOT_NAME: ${{ vars.SHADOW_BOT_NAME }}
+          SHADOW_BOT_LOGIN: ${{ vars.SHADOW_BOT_LOGIN }}
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const sha = context.payload.workflow_run.head_sha;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Find the PR for this SHA
+            let prNumber = null;
+            const prs = context.payload.workflow_run.pull_requests;
+            if (prs && prs.length > 0) {
+              prNumber = prs[0].number;
+            } else {
+              const {data: searchResult} = await github.rest.pulls.list({
+                owner, repo, state: 'open', sort: 'updated', direction: 'desc', per_page: 30
+              });
+              const match = searchResult.find(pr => pr.head.sha === sha);
+              if (match) {
+                prNumber = match.number;
+              }
+            }
+
+            if (!prNumber) {
+              core.info(`No open PR found for SHA ${sha}, skipping`);
+              return;
+            }
+
+            core.info(`Found PR #${prNumber} for SHA ${sha}`);
+
+            // Verify the PR head SHA still matches (no new push since trigger)
+            const {data: pr} = await github.rest.pulls.get({
+              owner, repo, pull_number: prNumber
+            });
+            if (pr.head.sha !== sha) {
+              core.info(`PR head ${pr.head.sha} differs from trigger SHA ${sha} — new push arrived, skipping`);
+              return;
+            }
+
+            // Condition 0: a PR that edits the bot's own guardrails could weaken
+            // the gate it is approved by, so require a human. Check both filename
+            // and previous_filename, else renaming a guarded file out of the way
+            // slips past.
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: prNumber, per_page: 100
+            });
+            const isGuarded = p => !!p && (p.startsWith('.github/') || p === '.shadow.yml');
+            const guarded = files.find(f => isGuarded(f.filename) || isGuarded(f.previous_filename));
+            if (guarded) {
+              core.info(`PR touches guarded path ${guarded.filename} — requires human review, skipping`);
+              return;
+            }
+
+            // Condition 1
+            const {data: workflowRuns} = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo, head_sha: sha, status: 'completed'
+            });
+            const ciRun = workflowRuns.workflow_runs.find(r =>
+              r.name === 'Java CI with Maven' && r.conclusion === 'success'
+            );
+            if (!ciRun) {
+              core.info(`CI has not passed for SHA ${sha}, skipping`);
+              return;
+            }
+
+            // Condition 2. Paginate: reviews come oldest-first 30/page, so an
+            // unpaginated read would miss the latest review on a busy PR.
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner, repo, pull_number: prNumber, per_page: 100
+            });
+
+            // Override the vars if you set a custom bot.name / bot.github_actor.
+            const BOT_LOGIN = process.env.SHADOW_BOT_LOGIN || 'github-actions[bot]';
+            const CLEAN_MARKER = `<!-- ${process.env.SHADOW_BOT_NAME || 'shadow'}:clean -->`;
+            const botReviews = reviews.filter(r => r.user && r.user.login === BOT_LOGIN);
+
+            const latestBot = botReviews
+              .sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at))[0];
+
+            if (!latestBot || !(latestBot.body || '').includes(CLEAN_MARKER) || latestBot.commit_id !== sha) {
+              core.info('Bot has not posted a clean review for this SHA, skipping');
+              return;
+            }
+
+            // DISMISSED = a human revoked the approval on this SHA; never re-approve.
+            const priorOnSha = botReviews.filter(r =>
+              r.commit_id === sha && (r.state === 'APPROVED' || r.state === 'DISMISSED')
+            );
+            if (priorOnSha.length > 0) {
+              core.info('Bot already approved or was dismissed on this SHA, skipping');
+              return;
+            }
+
+            // NONE = no prior repo association, so treat it like a first-timer.
+            const firstTime = ['FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE']
+              .includes(pr.author_association);
+            const largeDiff = (pr.additions + pr.deletions) > 500 || pr.changed_files > 20;
+            const highRisk = firstTime || largeDiff;
+
+            core.info(`Approving PR #${prNumber}: bot review clean + CI passed for SHA ${sha}` +
+                      (highRisk ? ' [high-risk: first-time contributor or large diff]' : ''));
+            await github.rest.pulls.createReview({
+              owner, repo, pull_number: prNumber,
+              event: 'APPROVE',
+              body: `No issues found and CI is passing. Auto-approved.\n\n---\n*Generated by AI — human merge required.*`
+            });
+
+            core.setOutput('approved', 'true');
+            core.setOutput('highrisk', highRisk ? 'true' : 'false');
+
+  # id-token only, no pull-requests: publishes the approval metric for the
+  # CloudWatch alarms without holding both GitHub-write and AWS in one job.
+  emit:
+    needs: approve
+    if: needs.approve.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      id-token: write
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        id: creds
+        continue-on-error: true   # no AWS_METRICS_ROLE_ARN => skip metric, don't fail
+        uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+        with:
+          # PutMetricData-only role (MetricsRoleArn stack output), NOT the full
+          # AWS_ROLE_ARN — this workflow only publishes a metric.
+          role-to-assume: ${{ secrets.AWS_METRICS_ROLE_ARN }}
+          role-session-name: shadow-approve-${{ github.run_id }}-${{ github.run_attempt }}
+          # Must match your CFN BedrockRegion, or the alarms (which are regional)
+          # never see these metrics. Change here if you deploy outside us-east-1.
+          aws-region: us-east-1
+      - name: Emit approval metric
+        if: steps.creds.outcome == 'success'
+        continue-on-error: true   # a dropped datapoint must not redden an approved run
+        env:
+          REPO: ${{ github.repository }}
+          HIGHRISK: ${{ needs.approve.outputs.highrisk }}
+        run: |
+          # `|| true` per call + HighRisk first: a throttle on one metric must
+          # not drop the other, least of all the first-high-risk-approval signal.
+          if [ "$HIGHRISK" = "true" ]; then
+            aws cloudwatch put-metric-data \
+              --namespace Shadow \
+              --metric-data "MetricName=HighRiskApproval,Value=1,Unit=Count,Dimensions=[{Name=Repository,Value=${REPO}},{Name=Pipeline,Value=agentic}]" || true
+          fi
+          aws cloudwatch put-metric-data \
+            --namespace Shadow \
+            --metric-data "MetricName=ApprovalGranted,Value=1,Unit=Count,Dimensions=[{Name=Repository,Value=${REPO}},{Name=Pipeline,Value=agentic}]" || true

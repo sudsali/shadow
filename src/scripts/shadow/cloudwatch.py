@@ -23,25 +23,13 @@ _DEFAULT_NAMESPACE = "Shadow"
 
 def emit_metrics(*, repository, metrics, action, pipeline="agentic", region=None, reason=None,
                   base_metrics=True, post_failure_count=0, slack_failure_count=0):
-    """Push a small batch of metrics to CloudWatch.
+    """Push a small batch of metrics to CloudWatch. Returns (ok, reason);
+    callers never fail on it — metrics are observability, not a prerequisite.
 
-    `metrics` is the artifact's `metrics` dict (post-_finalize_metrics).
-    `reason` (optional) is the artifact's reason field — attached as a
-    `Reason` dimension so operator dashboards can group SKIP/ESCALATE
-    counts by cause. The Reason value is keyed on the prefix before the
-    first `:` to bound dimension cardinality: every (model_id, exception)
-    combo would otherwise mint a separate stream (~$0.30/month each).
-    `base_metrics=False` lets the act() post-failure path emit only the
-    PostFailures / SlackDeliveryFailures metrics without re-counting
-    Invocations against analyze's.
-
-    `slack_failure_count` (act-time) emits a SlackDeliveryFailures metric so a
-    Slack-only team sees their escalation channel go dark — the Slack surface
-    was otherwise the one integration with no failure metric, unlike GitHub
-    posts (PostFailures).
-
-    Returns (ok, reason). Caller logs the reason but never fails on it —
-    metrics are observability, not a posting prerequisite."""
+    `reason` is keyed on the prefix before the first `:` so a (model, exception)
+    reason can't mint a fresh dimension stream per combo. `base_metrics=False`
+    lets act()'s post-failure path emit only PostFailures/SlackDeliveryFailures
+    without double-counting Invocations."""
     if os.getenv("SHADOW_CLOUDWATCH_DISABLED", "").lower() == "true":
         return False, "disabled by env"
     namespace = os.getenv("SHADOW_CLOUDWATCH_NAMESPACE", _DEFAULT_NAMESPACE)

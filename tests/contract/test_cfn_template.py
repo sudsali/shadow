@@ -41,10 +41,12 @@ def test_template_top_level_shape(doc):
     assert doc["AWSTemplateFormatVersion"] == "2010-09-09"
     assert "Description" in doc
     assert set(doc["Resources"].keys()) == {
-        "GitHubOidcProvider", "ShadowBotRole", "ShadowMonthlyBudget",
+        "GitHubOidcProvider", "ShadowBotRole", "ShadowMetricsRole",
+        "ShadowMonthlyBudget",
         "ShadowGuardrail", "ShadowGuardrailVersion",
         "ShadowAlarmTopic", "ShadowEscalationSpikeAlarm",
-        "ShadowInvocationSpikeAlarm",
+        "ShadowInvocationSpikeAlarm", "ShadowApprovalSpikeAlarm",
+        "ShadowHighRiskApprovalAlarm",
     }
 
 
@@ -56,14 +58,15 @@ def test_required_parameters_present(doc):
                 "ExistingOidcProviderArn",
                 "MonthlyBudgetLimit", "BudgetEmailAddress",
                 "EscalationSpikeThreshold", "InvocationSpikeThreshold",
+                "ApprovalSpikeThreshold", "HighRiskApprovalThreshold",
                 "ProvisionGuardrail"}
     assert set(doc["Parameters"].keys()) == expected
 
 
 def test_required_outputs_present(doc):
     # README points adopters at these output names.
-    expected = {"ShadowRoleArn", "OidcProviderArn", "TrustPolicyScope",
-                "BedrockRegion", "NextSteps",
+    expected = {"ShadowRoleArn", "MetricsRoleArn", "OidcProviderArn",
+                "TrustPolicyScope", "BedrockRegion", "NextSteps",
                 "GuardrailId", "GuardrailVersion", "AlarmTopicArn"}
     assert set(doc["Outputs"].keys()) == expected
 
@@ -135,6 +138,50 @@ def test_monthly_budget_parameter_present(doc):
     assert params["BudgetEmailAddress"]["Default"] == ""
 
 
+def test_metrics_role_is_putmetricdata_only(doc):
+    """The emit job's role must be least-privilege: only cloudwatch:PutMetricData
+    scoped to namespace Shadow, and NOTHING else (no Bedrock/Secrets/S3). This is
+    a distinct trust surface from shadow-review.yml, so a leak here would hand the
+    approval workflow the full engine role."""
+    role = doc["Resources"]["ShadowMetricsRole"]["Properties"]
+    policies = role["Policies"]
+    assert len(policies) == 1, "metrics role must carry exactly one policy"
+    statements = policies[0]["PolicyDocument"]["Statement"]
+    assert len(statements) == 1
+    stmt = statements[0]
+    assert stmt["Effect"] == "Allow"
+    assert stmt["Action"] == "cloudwatch:PutMetricData", \
+        "metrics role must grant ONLY PutMetricData"
+    assert stmt["Condition"]["StringEquals"]["cloudwatch:namespace"] == "Shadow"
+    # No engine permission anywhere in THIS role's policies.
+    blob = str(policies)
+    for forbidden in ("bedrock:", "secretsmanager:", "s3:"):
+        assert forbidden not in blob, f"metrics role leaked {forbidden}"
+    # Trust must pin to auto-approve.yml, not shadow-review.yml.
+    cond = role["AssumeRolePolicyDocument"]["Statement"][0]["Condition"]["StringLike"]
+    jwr = cond["token.actions.githubusercontent.com:job_workflow_ref"]
+    assert "auto-approve.yml" in jwr and "shadow-review.yml" not in jwr
+
+
+def test_approval_alarm_threshold_defaults(doc):
+    """HighRiskApprovalThreshold=0 is security-load-bearing: with
+    GreaterThanThreshold it pages on the first high-risk auto-approval. Pin the
+    defaults so a bump can't silently disable that."""
+    params = doc["Parameters"]
+    assert params["ApprovalSpikeThreshold"]["Type"] == "Number"
+    assert params["ApprovalSpikeThreshold"]["Default"] == 5
+    assert params["ApprovalSpikeThreshold"]["MinValue"] == 1
+    assert params["HighRiskApprovalThreshold"]["Type"] == "Number"
+    assert params["HighRiskApprovalThreshold"]["Default"] == 0
+    assert params["HighRiskApprovalThreshold"]["MinValue"] == 0
+    # Default 0 only means "page on the first" under GreaterThanThreshold; pin
+    # the operator + notBreaching or the semantics silently change.
+    for name in ("ShadowApprovalSpikeAlarm", "ShadowHighRiskApprovalAlarm"):
+        props = doc["Resources"][name]["Properties"]
+        assert props["ComparisonOperator"] == "GreaterThanThreshold"
+        assert props["TreatMissingData"] == "notBreaching"
+
+
 def test_monthly_budget_resource_present_when_set(doc):
     """The Budget resource must filter on Bedrock spend only — a missing
     CostFilter would alert on the entire account's spend, masking what
@@ -168,20 +215,29 @@ def test_behavioral_alarms_aggregate_the_emitted_metrics(doc):
     dimensions, and CloudWatch rejects SEARCH in an alarm. Metric names are
     cross-checked against cloudwatch.py so an emitter rename can't leave the
     alarm targeting a metric that's never published."""
-    emitter_src = (
-        Path(__file__).resolve().parents[2]
-        / "src/scripts/shadow/cloudwatch.py"
-    ).read_text()
+    root = Path(__file__).resolve().parents[2]
+    emitter_src = (root / "src/scripts/shadow/cloudwatch.py").read_text()
+    # ApprovalGranted / HighRiskApproval are published by auto-approve.yml, not
+    # the engine, so cross-check those two against the workflow.
+    workflow_src = (root / "examples/auto-approve.yml").read_text()
     alarms = {
-        "ShadowEscalationSpikeAlarm": ("Escalations", "EscalationSpikeThreshold"),
-        "ShadowInvocationSpikeAlarm": ("Invocations", "InvocationSpikeThreshold"),
+        "ShadowEscalationSpikeAlarm": ("Escalations", "EscalationSpikeThreshold", emitter_src, "engine"),
+        "ShadowInvocationSpikeAlarm": ("Invocations", "InvocationSpikeThreshold", emitter_src, "engine"),
+        "ShadowApprovalSpikeAlarm": ("ApprovalGranted", "ApprovalSpikeThreshold", workflow_src, "workflow"),
+        "ShadowHighRiskApprovalAlarm": ("HighRiskApproval", "HighRiskApprovalThreshold", workflow_src, "workflow"),
     }
-    for name, (metric, threshold_param) in alarms.items():
-        # The metric the alarm targets must actually be emitted by the engine.
-        # Match _datum(<quote><metric><quote>) tolerating whitespace/quote style
-        # so a benign reformat of cloudwatch.py doesn't false-fail this.
-        assert re.search(rf'_datum\(\s*[\'"]{metric}[\'"]', emitter_src), \
-            f"{name} targets {metric}, which cloudwatch.py does not emit"
+    for name, (metric, threshold_param, src, kind) in alarms.items():
+        # The metric the alarm targets must actually be published by its emitter.
+        if kind == "engine":
+            # Match _datum(<quote><metric><quote>), tolerating whitespace/quotes.
+            assert re.search(rf'_datum\(\s*[\'"]{metric}[\'"]', src), \
+                f"{name} targets {metric}, which cloudwatch.py does not emit"
+        else:
+            # Workflow publishes via `MetricName=<metric>,` in an aws CLI call.
+            # Trailing comma anchors the name so a superstring rename (e.g.
+            # ApprovalGrantedV2) can't satisfy an alarm still on the old name.
+            assert f"MetricName={metric}," in src, \
+                f"{name} targets {metric}, which auto-approve.yml does not emit"
         alarm = doc["Resources"][name]
         assert alarm["Type"] == "AWS::CloudWatch::Alarm"
         assert alarm["Condition"] == "CreateAlarms"

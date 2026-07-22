@@ -51,7 +51,7 @@ Set `SLACK_WEBHOOK_URL` and Shadow posts a one-line summary to a Slack channel o
 ### What Shadow does NOT do
 
 - **Auto-close PRs.** Shadow only comments and labels. You decide what merges.
-- **Auto-merge or auto-approve.** Same.
+- **Auto-merge.** Shadow never merges; you decide what merges. (Auto-*approve* is available as an opt-in, off by default — see [Auto-approval](#auto-approval).)
 - **Cross-repo refactors.** Shadow scopes to one repo at a time.
 - **Check out PR head code.** The workflow uses `pull_request_target` and reads only the base-branch checkout, defending against the [pwn-request attack](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/) where untrusted PR code runs in privileged context.
 
@@ -122,15 +122,16 @@ codebase:
   src_dir: src/    # required — your primary source directory
 ```
 
-### 3. AWS role + guardrail — three repo secrets
+### 3. AWS role + guardrail — repo secrets
 
-[Click the Launch Stack button](#aws-setup) (one click), or [follow the manual setup](#manual-setup-alternative). The stack emits three outputs to paste into repo secrets (Settings → Secrets and variables → Actions):
+[Click the Launch Stack button](#aws-setup) (one click), or [follow the manual setup](#manual-setup-alternative). Paste these stack outputs into repo secrets (Settings → Secrets and variables → Actions):
 
 | Stack output | Repo secret | Required? |
 |---|---|---|
 | `ShadowRoleArn` (`arn:aws:iam::...:role/shadow-bot-ci`) | `AWS_ROLE_ARN` | Always |
 | `GuardrailId` | `GUARDRAIL_ID` | Production runs (default `ProvisionGuardrail=true`) |
 | `GuardrailVersion` | `GUARDRAIL_VERSION` | Production runs |
+| `MetricsRoleArn` | `AWS_METRICS_ROLE_ARN` | Only with [auto-approval](#auto-approval) enabled |
 
 A production run (`DRY_RUN=false`) with `GUARDRAIL_ID` unset is refused at load time — Shadow won't run without prompt-injection defense. To opt out (e.g. a custom guardrail, or a dry-run-only fork), pass `require_guardrail: 'false'` under the caller's `with:` block. See [Security model](#security-model).
 
@@ -291,8 +292,9 @@ The button opens AWS Console with [`infrastructure/shadow-iam-stack.yaml`](infra
 | **ShadowWorkflowRef** | `*` for quick start, a `refs/tags/v1.x` release tag (e.g. `refs/tags/v1.8`), or a 40-char SHA to pin trust to one audited revision |
 | **BedrockRegion** | Where Bedrock will be invoked. `us-east-1` / `us-west-2` / `us-east-2` are the validated combinations; other regions work if both Opus 4.8 and Haiku 4.5 are available there ([model-region matrix](https://docs.aws.amazon.com/bedrock/latest/userguide/models-regions.html)). The region you pick here must match where you enable model access in the next step. |
 | **ExistingOidcProviderArn** | Leave blank if your account has no GitHub OIDC provider yet. **If your account already uses GitHub Actions OIDC, paste the existing provider ARN** (`aws iam list-open-id-connect-providers`). Leaving blank when one exists fails with `EntityAlreadyExists`. |
-| **MonthlyBudgetLimit** + **BudgetEmailAddress** | Optional. `MonthlyBudgetLimit > 0` + an email enables an AWS Budget emailing at 80% / 100% of the cap (`0` skips the Budget). **Supplying `BudgetEmailAddress` also provisions two behavioral-anomaly alarms** (escalation/invocation spikes — see [Cost protection](#cost-protection)) regardless of the limit; blank skips both. Confirm the SNS subscription email or alerts won't arrive. |
+| **MonthlyBudgetLimit** + **BudgetEmailAddress** | Optional. `MonthlyBudgetLimit > 0` + an email enables an AWS Budget emailing at 80% / 100% of the cap (`0` skips the Budget). **Supplying `BudgetEmailAddress` also provisions the behavioral-anomaly alarms** (see [Cost protection](#cost-protection)) regardless of the limit; blank skips them. Confirm the SNS subscription email or alerts won't arrive. |
 | **EscalationSpikeThreshold** / **InvocationSpikeThreshold** | Fleet-wide per-hour alarm thresholds (defaults `25` / `100`). Only used when `BudgetEmailAddress` is set. Raise them above your normal hourly volume to avoid false pages. |
+| **ApprovalSpikeThreshold** / **HighRiskApprovalThreshold** | Auto-approval alarm thresholds (defaults `5` / `0`). Only relevant with auto-approval enabled (see [Auto-approval](#auto-approval)). `HighRiskApprovalThreshold: 0` pages on the first auto-approval of a first-time contributor or large diff; raise it if you get many such PRs. |
 | **ProvisionGuardrail** | Default `true`. Provisions a Bedrock Guardrail with prompt-attack defense + PII blocks (see [Security model](#security-model)). Set to `false` only if you maintain a custom guardrail and want to point Shadow at it via the `GUARDRAIL_ID`/`GUARDRAIL_VERSION` secrets. |
 
 The stack creates the OIDC provider (if needed), an IAM role with the canonical `job_workflow_ref`-pinned trust policy, a Bedrock-invoke permission scoped to Anthropic models only, AND (by default) a Bedrock Guardrail with prompt-attack + PII filters. After deploy, copy these outputs into repo secrets:
@@ -372,6 +374,16 @@ If you prefer not to run CloudFormation:
 
 ---
 
+## Auto-approval
+
+Off by default. Shadow is comment-only until a maintainer sets the repo/org variable `SHADOW_AUTO_APPROVE=true`, because a bot approval can satisfy branch protection's required review — so enabling it means a clean PR can be approved without a human approval on the path. Enable it only where that trade-off is acceptable.
+
+To enable: copy [`examples/auto-approve.yml`](examples/auto-approve.yml) to `.github/workflows/`, set the CI workflow name in the two marked places, and set `SHADOW_AUTO_APPROVE=true`. It approves a PR only when Shadow's review is clean (`<!-- shadow:clean -->`), CI passed for that exact SHA, and the PR touches no guarded path (`.github/`, `.shadow.yml`). It never merges.
+
+The workflow also publishes `ApprovalGranted` / `HighRiskApproval` metrics so the approval-spike and high-risk-approval alarms fire. This runs in a separate OIDC-only job that assumes a dedicated `PutMetricData`-only role (the stack's `MetricsRoleArn` output → set as the `AWS_METRICS_ROLE_ARN` secret) — so no job holds both GitHub-write and AWS, and the approval workflow never gets the engine's Bedrock/Secrets/S3 role. High-risk = first-time contributor or large diff (>500 lines or >20 files). The emit job's `aws-region` must match your `BedrockRegion`, or those regional alarms never see the data.
+
+---
+
 ## Security model
 
 You're letting a bot read your repo and post on your behalf. Here's the trust boundary.
@@ -424,7 +436,7 @@ The per-PR levers (under [What it costs](#what-it-costs)) bound a single review.
 - **Per-(repo, item) hourly rate limit** (`BOT_MAX_RUNS_PER_HOUR`, default `20`). Caps how many times a single PR or issue can trigger Shadow per rolling hour. Beyond the limit, the bot ESCALATES with a `<bot.name>:rate-limited` label instead of running the agent pipeline. Defends against an adversary closing/reopening or editing a PR title in a loop. Set to `0` to disable. **Issue/issue_comment events** require `run-name: "Shadow #${{ github.event.issue.number || ... }}"` in your caller workflow so the rate-limit gate can match prior runs (see [`examples/caller-workflow.yml`](examples/caller-workflow.yml)).
 - **Pre-flight diff/file caps** (`BOT_MAX_DIFF_FOR_REVIEW_CHARS`, `BOT_MAX_FILES_FOR_REVIEW`, defaults `100000` / `50`). A 50-file PR makes the Investigator read 5+ files, the Critic re-reads, the Reporter formats — costs multiply. Diff or file count above the cap → ESCALATE before any Bedrock call. Pre-flight escalation is ~$0; a runaway pipeline on a giant PR is $5+.
 - **AWS Budgets opt-in via CFN** (`MonthlyBudgetLimit` parameter on `shadow-iam-stack.yaml`). Set a positive USD amount + a `BudgetEmailAddress` and the stack creates an `AWS::Budgets::Budget` filtered to Amazon Bedrock spend, with email alerts at 80% and 100%. `0` skips Budget creation (default — AWS Budgets bills $0.02/budget/day, so opt-in only). Email-only today; auto-shutdown via `SHADOW_DISABLED` is a planned upgrade.
-- **Behavioral-anomaly alarms via CFN** (provisioned when `BudgetEmailAddress` is set). Two CloudWatch alarms aggregate the `Shadow` namespace fleet-wide via a Metrics Insights query (`SELECT SUM(...) FROM "Shadow"`): an **escalation spike** (`EscalationSpikeThreshold`, default `25`/hr — flags prompt-injection/abuse bursts or systemic failures) and an **invocation spike** (`InvocationSpikeThreshold`, default `100`/hr — flags public-trigger floods driving Bedrock spend, faster than the monthly Budget). Both notify the `AlarmTopicArn` SNS topic (`BudgetEmailAddress` auto-subscribed — confirm the email). Detection latency is up to 1 hour; tune thresholds to your fleet volume to avoid false pages. **Deploy the stack in the same region as your `aws_region`/`BedrockRegion`** — CloudWatch alarms are regional and see only metrics emitted in their own region. The alarms depend on Shadow's metric emission, so they are blind if `SHADOW_CLOUDWATCH_DISABLED=true` (they sit green, not red — absence of data isn't a breach). These are Metrics Insights query alarms, billed per alarm plus the metrics each query scans (which grows with your repo/reason cardinality) — small but not flat; see [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/).
+- **Behavioral-anomaly alarms via CFN** (provisioned when `BudgetEmailAddress` is set). Four CloudWatch alarms aggregate the `Shadow` namespace fleet-wide via a Metrics Insights query (`SELECT SUM(...) FROM "Shadow"`): an **escalation spike** (`EscalationSpikeThreshold`, default `25`/hr — flags prompt-injection/abuse bursts or systemic failures), an **invocation spike** (`InvocationSpikeThreshold`, default `100`/hr — flags public-trigger floods driving Bedrock spend, faster than the monthly Budget), an **approval spike** (`ApprovalSpikeThreshold`, default `5`/hr — flags a burst of auto-approvals), and a **high-risk approval** alarm (`HighRiskApprovalThreshold`, default `0` — pages on the first auto-approval of a first-time contributor or large diff). The last two only receive data where auto-approval is enabled (see [Auto-approval](#auto-approval)). All notify the `AlarmTopicArn` SNS topic (`BudgetEmailAddress` auto-subscribed — confirm the email). Detection latency is up to 1 hour; tune thresholds to your fleet volume to avoid false pages. **Deploy the stack in the same region as your `aws_region`/`BedrockRegion`** — CloudWatch alarms are regional and see only metrics emitted in their own region; the auto-approve workflow's emit job must use that same region. The alarms depend on Shadow's metric emission, so they are blind if `SHADOW_CLOUDWATCH_DISABLED=true` (they sit green, not red — absence of data isn't a breach). These are Metrics Insights query alarms, billed per alarm plus the metrics each query scans (which grows with your repo/reason cardinality) — small but not flat; see [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/).
 
 ---
 
@@ -466,7 +478,7 @@ If you previously tried to set `SHADOW_DISABLED` as a Secret rather than a Varia
 **Implemented** (shipped, covered by tests + CI):
 
 - BYO-AWS reusable workflow with two-job security split (`analyze` / `act`)
-- One-click CloudFormation Launch Stack for IAM, OIDC trust, AWS Budget, optional behavioral-anomaly CloudWatch alarms (escalation/invocation spikes), **and a default Bedrock Guardrail** with prompt-attack + PII filters (set `ProvisionGuardrail=false` to skip)
+- One-click CloudFormation Launch Stack for IAM, OIDC trust, AWS Budget, optional behavioral-anomaly CloudWatch alarms (escalation, invocation, approval, and high-risk-approval spikes), **and a default Bedrock Guardrail** with prompt-attack + PII filters (set `ProvisionGuardrail=false` to skip)
 - `shadow doctor` preflight CLI (verifies role, Bedrock access, prompts)
 - Audit trail in artifact: prompt-hash provenance, security-events histogram, SHA-256 integrity stamp bound to `(repo, run_id, pr_number)`
 - Refutation Trail rendered into posted comments (`<details>` block per finding)

@@ -39,13 +39,8 @@ class Config:
             shadow_config.get(yml, "models", "investigator"),
             _DEFAULT_MODEL,
         ), _DEFAULT_MODEL)
-        # Reporter is JSON-formatting only; Haiku handles structured output
-        # well enough AND is the model the issue path REQUIRES (Opus 4.7/4.8
-        # reject outputConfig.textFormat over Bedrock today). Adopters who
-        # override BEDROCK_MODEL_ID (Investigator) without setting Reporter
-        # silently get Haiku here — log loud at INFO so the asymmetry is
-        # visible in workflow logs rather than discovered via "why does my
-        # Reporter look weaker than my Investigator".
+        # Overriding only BEDROCK_MODEL_ID leaves Reporter on the Haiku default;
+        # the INFO log below makes that asymmetry visible in workflow logs.
         self.reporter_model_id = _scrub_model_id(shadow_config.env_or(
             "BEDROCK_REPORTER_MODEL_ID",
             shadow_config.get(yml, "models", "reporter"),
@@ -58,14 +53,9 @@ class Config:
                 "BEDROCK_REPORTER_MODEL_ID to override.",
                 self.reporter_model_id, self.bedrock_model_id,
             )
-        # Model for the issue-triage / issue-respond / followup answers.
-        # Defaults to the reporter model (Haiku) so behavior is unchanged, but
-        # is a distinct knob: issue answers are customer-facing prose that
-        # benefit from a stronger model (bench: Sonnet 4.6 >> Haiku on accuracy
-        # + hallucination), whereas the PR reporter only serializes the Critic's
-        # verdicts into JSON and stays cheap. Must still support structured
-        # output over Bedrock (Haiku 4.5 / Sonnet 4.6 do; Opus 4.8 / Sonnet 5
-        # do NOT), same constraint as the reporter.
+        # Distinct knob from reporter (defaults to it): issue answers are
+        # customer-facing prose worth a stronger model, but must still support
+        # structured output over Bedrock (Haiku 4.5 / Sonnet 4.6 do; Opus does not).
         self.issue_model_id = _scrub_model_id(shadow_config.env_or(
             "BEDROCK_ISSUE_MODEL_ID",
             shadow_config.get(yml, "models", "issue"),
@@ -92,16 +82,9 @@ class Config:
 
         self.dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
 
-        # Guardrail-required mode. Defaults ON: a production run (DRY_RUN=false)
-        # without GUARDRAIL_ID set is a misconfiguration — the CFN Launch Stack
-        # provisions one by default and outputs the ID; if the adopter skipped
-        # pasting it into a secret, refuse rather than silently run with the
-        # local sanitizer alone. DRY_RUN=true bypasses the check so adopters
-        # can still validate end-to-end without a guardrail in the dry path.
-        # Override BOT_REQUIRE_GUARDRAIL=false to point at a custom hand-built
-        # guardrail provisioned outside the CFN stack and not yet wired in,
-        # OR to deliberately accept the local-sanitizer-only stance for a
-        # specific deployment (not recommended).
+        # Default ON: a production run (DRY_RUN=false) without GUARDRAIL_ID
+        # refuses rather than run sanitizer-only. DRY_RUN bypasses;
+        # BOT_REQUIRE_GUARDRAIL=false opts out for a custom/hand-built guardrail.
         self.require_guardrail = os.getenv(
             "BOT_REQUIRE_GUARDRAIL", "true",
         ).strip().lower() not in ("0", "false", "no", "off")
@@ -258,14 +241,10 @@ def _require(name):
 
 
 def _int_env(name, default):
-    """Garbage env values fall back to default rather than killing analyze()
-    before any artifact is written. Negative values also fall back to default
-    with a named warning — every _int_env caller is a positive cost/wall-clock
-    cap whose downstream consumer either gates on `> 0` (max_diff_for_review,
-    max_files_for_review at main.py:1152-1153) or treats negative values as
-    immediate-exhaustion (tool-call / turn / budget caps), so a `-1` typo
-    would silently disable pre-flight defenses or short-circuit the agent
-    pipeline."""
+    """Unparseable or negative env values fall back to default (never crash
+    analyze() before an artifact is written). Negatives fall back rather than
+    pass through because every caller is a positive cost/wall-clock cap where a
+    `-1` would disable a pre-flight defense or short-circuit the pipeline."""
     raw = os.getenv(name)
     try:
         n = int(raw) if raw else default
@@ -293,15 +272,10 @@ def _scrub_codeblock_token(val):
 
 
 def _scrub_attribution(val):
-    """One-line footer attribution, appended to posted comments outside the
-    sanitize() boundary — so it must be self-scrubbing to the same standard the
-    sanitizer enforces on model output, or adopter config becomes a way to slip
-    unsanitized text past it. Non-string/empty yields "".
-
-    Removes: newlines/backticks/`<!--`/`-->` (would break the one-line footer or
-    the adjacent clean-marker); any sanitizer injection marker (so config can't
-    bypass the marker block bot output is held to); and neutralizes `@`/`#` so a
-    stray value can't fire GitHub auto-mentions or issue-refs. Length-capped."""
+    """Appended to comment footers OUTSIDE the sanitize() boundary, so it must
+    self-scrub to the sanitizer's standard or adopter config becomes a bypass.
+    Strips newlines/backticks/comment delimiters + injection markers, and
+    zero-width-breaks `@`/`#` so a typo can't fire mentions/issue-refs."""
     if not isinstance(val, str):
         return ""
     val = val.replace("\r", " ").replace("\n", " ").replace("`", "")
@@ -357,25 +331,12 @@ def _parse_allowed_labels(env_val, yaml_val, default):
 
 
 def _int_in_range_or_default(val, default, *, name):
-    """Yaml int, env str, or wrong type → default. Cap range [0, 100] so a
-    yaml typo can't set the bound absurdly high. `0` is valid and means
-    "no limit applied" (callers decide per-field semantics — e.g.,
-    max_bot_replies=0 means escalate-on-first-followup, max_runs_per_hour=0
-    means disable the rate limit). Garbage strings (`"--5"`, `"++5"`,
-    `"5  abc"`) fall back to default rather than crash Config().
-
-    Negative parsed ints fall back to default (with warning) rather than
-    clamping to 0 — clamping a negative typo to 0 silently flips
-    rate-limit/reply semantics into "disabled" / "escalate-on-first-reply",
-    which is the exact opposite of what an operator typing -1 intended.
-    Out-of-range positive ints clamp to 100 with warning so an operator
-    who set BOT_MAX_RUNS_PER_HOUR=200 hoping to double the cap doesn't
-    silently get the default (20) — the original rate-limit-tuning footgun.
-    Both diagnostics name the env var so the misconfig is greppable in
-    workflow logs.
-
-    `name` is keyword-only and required so a future caller can't omit it
-    and silently re-introduce the no-warning footgun."""
+    """int/str/wrong-type → default, clamped to [0, 100]. `0` is valid ("no
+    limit"; per-field meaning). Negatives fall back to default rather than
+    clamp to 0, which would flip rate-limit/reply semantics to "disabled" —
+    the opposite of what `-1` intends. Positives above 100 clamp to 100 (not
+    default) so BOT_MAX_RUNS_PER_HOUR=200 doesn't silently revert to 20.
+    `name` is required (keyword-only) so a caller can't drop the warning."""
     if isinstance(val, bool):
         logger.warning(
             "%s=%r is a bool, not an int; using default %d", name, val, default,
@@ -428,21 +389,13 @@ def _scrub_model_id(val, default):
 
 
 def _scrub_marker_token(val, default):
-    """Embedded in `<!-- {bot}:clean -->`; reject HTML-comment-breaking chars.
-    Collapses runs of `-`/`_` to a single char so adjacent dashes can't break
-    out of the `<!-- ... -->` envelope (HTML forbids `--` inside a comment
-    body — `<!-- shadow--evil:clean -->` would close the comment early).
-
-    Also rejects a small, hardcoded list of token-suffix patterns whose
-    rendered marker (`<!-- {name}:clean -->`) would trip the sanitizer's
-    injection-marker list (e.g., bot_name='system' renders
-    `<!-- system:clean -->`; the `system:` substring matches sanitizer's
-    `system:` marker → every clean review nulls to ESCALATE without a
-    marker). The reject-list is intentionally NOT imported from
-    sanitizer._INJECTION_MARKERS — that list grows as new injection classes
-    are discovered, and each addition must NOT silently invalidate adopters'
-    deployed bot_name. Keep this list narrow and bump it explicitly with a
-    CHANGELOG entry when a new bot_name pattern needs blocking."""
+    """Embedded in `<!-- {bot}:clean -->`. Rejects HTML-comment-breaking chars
+    and collapses `--`/`__` runs (HTML forbids `--` inside a comment, so
+    `shadow--evil` would close the envelope early). Also rejects names whose
+    rendered marker would substring-match a sanitizer injection marker (only
+    `system` does today) — NOT imported from sanitizer._INJECTION_MARKERS,
+    since that list grows and must not retroactively invalidate a deployed
+    bot_name."""
     if not isinstance(val, str):
         return default
     val = "".join(c for c in val if c.isalnum() or c in "-_")
@@ -452,11 +405,6 @@ def _scrub_marker_token(val, default):
     val = val[:32]
     if not val:
         return default
-    # Hardcoded reject-list. The rendered marker shape is `:clean -->`, so
-    # a bot_name ending in any of these tokens produces `<token>:clean` which
-    # would substring-match sanitizer._INJECTION_MARKERS. Today only `system`
-    # actually trips a marker; the others are reserved for future markers
-    # added in lockstep with a CHANGELOG entry.
     _REJECTED_NAME_SUFFIXES = ("system",)
     lower_val = val.lower()
     for suffix in _REJECTED_NAME_SUFFIXES:
