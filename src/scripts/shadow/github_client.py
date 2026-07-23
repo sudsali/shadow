@@ -271,13 +271,10 @@ class GitHubClient:
           - Same item (issue/issue_comment): name OR display_title contains `#<n>`
           - Exclude current run: run.id != GITHUB_RUN_ID
 
-        The pull_requests array fixes the prior `head_branch == pull/<n>`
-        check, which never matched real workflow_run records (head_branch is
-        the source branch name, not a refs/pull/... synthetic). The name+id
-        filter covers issue_comment events — but ONLY when the adopter's
-        caller workflow embeds the item number via `run-name:` (the reusable
+        The issue/issue_comment match works ONLY when the adopter's caller
+        workflow embeds the item number via `run-name:` (the reusable
         workflow's own run-name is ignored under workflow_call). See
-        `examples/caller-workflow.yml` for the canonical template.
+        `examples/caller-workflow.yml`.
         """
         try:
             since = (datetime.datetime.now(datetime.timezone.utc)
@@ -415,15 +412,10 @@ class GitHubClient:
         ]
 
         payload = {"body": body, "event": event}
-        # Pin the review to the exact commit that was analyzed. Without commit_id,
-        # GitHub stamps the review with the PR's current head at post time — so a
-        # push landing between analyze and act would attach a review (computed
-        # against the old code) to the new head. Downstream automation keying on
-        # review.commit_id (e.g. an auto-approve gate that requires the review's
-        # commit to equal the tip) then behaves on a mismatched pairing. Sending
-        # the analyzed SHA keeps the review honestly bound to what it reviewed;
-        # if head has moved on, such a gate correctly declines rather than
-        # approving stale analysis.
+        # Pin the review to the analyzed commit. Without commit_id GitHub stamps
+        # it with the current head at post time, so a push between analyze and
+        # act would bind old-code analysis to the new head — and an auto-approve
+        # gate keying on review.commit_id == tip would then act on a mismatch.
         if commit_id:
             payload["commit_id"] = commit_id
         if valid_comments:

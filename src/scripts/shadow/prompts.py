@@ -198,16 +198,10 @@ def prompt_version(template):
 # Every prompt the bot loads at runtime, captured by
 # compute_prompt_provenance() and validated by doctor. Tuples of
 # (stage, env_var, filename, sm_fallback_to_disk). Order is the published
-# artifact ordering; do not reorder casually. Each sm_fallback flag MUST match
-# the corresponding getter, or provenance mislabels a fell-back prompt's source.
-#
-# All four surfaces are first-class here, not just PR review: the 3 issue/
-# followup prompts drive customer-visible output (issue classification,
-# citation-backed answers, follow-up replies) exactly as the 5 PR prompts do,
-# so they belong in the audit rollup and the doctor's loadability check too.
-# The issue/followup core prompts are fail-closed (sm_fallback=False) to match
-# their getters below — a missing/misconfigured secret must surface as "" (and
-# ESCALATE), never silently run the bundled default on a customer-visible reply.
+# artifact ordering; do not reorder. Each sm_fallback flag MUST match the
+# corresponding getter, or provenance mislabels a fell-back prompt's source.
+# The issue/followup core prompts are fail-closed (sm_fallback=False): a
+# missing secret must surface as "" (→ESCALATE), not silently run the default.
 _ACTIVE_PROMPTS = (
     ("investigator", "PR_INVESTIGATOR_PROMPT", "pr-investigator.txt", False),
     ("critic", "PR_CRITIC_PROMPT", "pr-critic.txt", False),

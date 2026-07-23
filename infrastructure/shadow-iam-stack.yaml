@@ -16,7 +16,7 @@ Metadata:
       - Label: { default: "Bedrock region" }
         Parameters: [BedrockRegion]
       - Label: { default: "Cost protection & anomaly alarms (optional)" }
-        Parameters: [MonthlyBudgetLimit, BudgetEmailAddress, EscalationSpikeThreshold, InvocationSpikeThreshold]
+        Parameters: [MonthlyBudgetLimit, BudgetEmailAddress, EscalationSpikeThreshold, InvocationSpikeThreshold, ApprovalSpikeThreshold, HighRiskApprovalThreshold]
       - Label: { default: "Prompt-injection guardrail" }
         Parameters: [ProvisionGuardrail]
     ParameterLabels:
@@ -29,6 +29,8 @@ Metadata:
       BudgetEmailAddress:       { default: "Email for budget + anomaly-alarm notifications (also enables the alarms)" }
       EscalationSpikeThreshold: { default: "Escalations/hour that trips the anomaly alarm (default 25)" }
       InvocationSpikeThreshold: { default: "Invocations/hour that trips the anomaly alarm (default 100)" }
+      ApprovalSpikeThreshold:   { default: "Auto-approvals/hour that trip the approval-spike alarm (default 5)" }
+      HighRiskApprovalThreshold: { default: "High-risk auto-approvals/hour before alerting (default 0 = first one)" }
       ProvisionGuardrail:       { default: "Provision a Bedrock Guardrail (recommended; default ON)" }
 
 Parameters:
@@ -130,6 +132,24 @@ Parameters:
       100+/hr — set above your expected fleet peak.
     Default: 100
     MinValue: 1
+
+  ApprovalSpikeThreshold:
+    Type: Number
+    Description: >-
+      Fleet-wide auto-approvals/hour above which the approval-spike alarm fires.
+      Only meaningful where SHADOW_AUTO_APPROVE is enabled. Auto-approval is
+      opt-in and rare on most repos, so the default is deliberately low.
+    Default: 5
+    MinValue: 1
+
+  HighRiskApprovalThreshold:
+    Type: Number
+    Description: >-
+      Auto-approvals of a high-risk PR (first-time contributor or large diff)
+      per hour above which the high-risk alarm fires. Default 0 alerts on the
+      first one, since a single such approval is worth a human look.
+    Default: 0
+    MinValue: 0
 
   ProvisionGuardrail:
     Type: String
@@ -358,6 +378,48 @@ Resources:
         - { Key: ManagedBy, Value: shadow-iam-stack }
         - { Key: Component, Value: shadow-bot }
 
+  ShadowMetricsRole:
+    # Assumed by the adopter's auto-approve.yml emit job. Least-privilege: only
+    # PutMetricData, so the approval workflow (which is a distinct trust surface
+    # from shadow-review.yml) never gets Bedrock/Secrets/S3. Trust is pinned to
+    # auto-approve.yml so no other workflow can assume it.
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: shadow-bot-metrics
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+              StringLike:
+                "token.actions.githubusercontent.com:sub":
+                  !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+                "token.actions.githubusercontent.com:job_workflow_ref":
+                  !Sub "${GitHubOrg}/${GitHubRepo}/.github/workflows/auto-approve.yml@*"
+      Policies:
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "cloudwatch:namespace": Shadow
+      Tags:
+        - { Key: ManagedBy, Value: shadow-iam-stack }
+        - { Key: Component, Value: shadow-bot }
+
   ShadowMonthlyBudget:
     # Optional fleet-wide cost protection. The per-PR caps
     # (BOT_INVESTIGATOR_MAX_TOOL_CALLS, BOT_MAX_DIFF_FOR_REVIEW_CHARS) bound a
@@ -460,6 +522,54 @@ Resources:
       AlarmActions:
         - !Ref ShadowAlarmTopic
 
+  ShadowApprovalSpikeAlarm:
+    # A bot APPROVE can satisfy required review, so an approval burst is the
+    # highest-signal abuse indicator (invocation spike is only a proxy).
+    # ApprovalGranted comes from the caller's auto-approve.yml, same namespace.
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlarms
+    Properties:
+      AlarmName: !Sub "shadow-bot-approval-spike-${GitHubOrg}"
+      AlarmDescription: >-
+        Fleet-wide auto-approvals exceeded the threshold in a 1-hour window.
+        Each is a bot APPROVE that can satisfy required review — inspect the
+        approved PRs before assuming benign.
+      EvaluationPeriods: 1
+      Threshold: !Ref ApprovalSpikeThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: appr_total
+          Label: ApprovalsPerHourFleetWide
+          Expression: 'SELECT SUM("ApprovalGranted") FROM "Shadow"'
+          Period: 3600
+          ReturnData: true
+      AlarmActions:
+        - !Ref ShadowAlarmTopic
+
+  ShadowHighRiskApprovalAlarm:
+    # A single auto-approval of a first-time contributor or large diff is worth
+    # a look on its own; the default threshold 0 pages on the first one.
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlarms
+    Properties:
+      AlarmName: !Sub "shadow-bot-highrisk-approval-${GitHubOrg}"
+      AlarmDescription: >-
+        A high-risk PR (first-time contributor or large diff) was auto-approved.
+        Review the PR and confirm the bot's clean verdict was correct.
+      EvaluationPeriods: 1
+      Threshold: !Ref HighRiskApprovalThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: hr_total
+          Label: HighRiskApprovalsPerHourFleetWide
+          Expression: 'SELECT SUM("HighRiskApproval") FROM "Shadow"'
+          Period: 3600
+          ReturnData: true
+      AlarmActions:
+        - !Ref ShadowAlarmTopic
+
 Outputs:
   ShadowRoleArn:
     Description: >-
@@ -467,6 +577,12 @@ Outputs:
       your repo: Settings → Secrets and variables → Actions → New
       repository secret.
     Value: !GetAtt ShadowBotRole.Arn
+
+  MetricsRoleArn:
+    Description: >-
+      Paste as the `AWS_METRICS_ROLE_ARN` repository secret. Only the
+      auto-approve.yml emit job uses it; PutMetricData-only.
+    Value: !GetAtt ShadowMetricsRole.Arn
 
   OidcProviderArn:
     Description: GitHub Actions OIDC provider ARN (created or reused).

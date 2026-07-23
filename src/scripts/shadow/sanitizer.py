@@ -20,13 +20,9 @@ _SECRET_PATTERNS = [
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private_key_header"),
     (re.compile(r"AccountKey\s*=\s*[A-Za-z0-9+/=]{40,}"), "azure_storage_key"),
     (re.compile(r"_authToken\s*=\s*\S+"), "npm_authtoken"),
-    # URL with embedded credentials: scheme://[user]:pw@host (any scheme).
-    # Covers postgres://, mysql://, mongodb://, redis://, amqp://, ftp://,
-    # https?://, etc. Database URLs frequently carry creds in the userinfo
-    # segment and previously slipped past the https?:// floor. The user
-    # component is optional (`*`) so `redis://:password@host` — Redis's
-    # standard "no-username" shape — is still recognised. The leading
-    # `scheme://` anchor prevents false positives on prose like
+    # URL with embedded credentials: scheme://[user]:pw@host (any scheme, to
+    # catch db URLs like postgres://). User is optional so `redis://:pw@host`
+    # matches; the `scheme://` anchor avoids false positives on prose like
     # `meeting at 12:30@home`.
     (re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s/:]*:[^\s/@]+@"), "url_with_credentials"),
     # JWT (header.payload.signature). Real tokens have base64url segments

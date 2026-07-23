@@ -27,23 +27,12 @@ def _is_throttling_error(exc):
         return False
     return code == "ThrottlingException" or code == "TooManyRequestsException"
 
-# Models that reject sampling params (temperature, top_p, top_k) in
-# inferenceConfig — Opus 4.7 returns HTTP 400 if any are present. This
-# codebase only ever sends `temperature` (top_p / top_k are never set in
-# any call path), so the helper only strips `temperature`; if a future
-# caller starts setting top_p / top_k, the helper signature and the strip
-# branch must be extended in lockstep.
-# Model families that reject sampling params (temperature) on Bedrock Converse:
-# Opus 4.7/4.8/4.9 and single-digit Opus/Sonnet majors >= 5. Every alternative
-# is boundary-anchored with (?!\d) so it matches the whole version token and
-# never substring-matches a larger number or a date suffix — `opus-4-70`,
-# `opus-50`, `sonnet-20240229` (Claude 3, which accepts temperature) do NOT
-# match. Kept to single-digit majors deliberately: a hypothetical two-digit
-# major (opus-10) is not enumerated here, but this is a best-effort fast path,
-# NOT the only safeguard — converse() retries without sampling params if a model
-# reports the param rejected (see _converse_with_retry), so any family missing
-# here still degrades gracefully (one extra call + a warning) instead of
-# hard-failing. Add new families here to skip that retry.
+# Model families that reject `temperature` on Bedrock Converse (Opus 4.7+ and
+# single-digit Opus/Sonnet majors >= 5). Each alternative is boundary-anchored
+# with (?!\d) so it can't substring-match a larger number or date suffix
+# (`opus-4-70`, `sonnet-20240229`). This is only a fast path: _converse_with_retry
+# retries without sampling params if a model reports it rejected, so a family
+# missing here still degrades gracefully rather than hard-failing.
 _NO_SAMPLING_PARAMS_PATTERN = re.compile(
     r"opus-4-[7-9](?!\d)"
     r"|opus-[5-9](?!\d)"
