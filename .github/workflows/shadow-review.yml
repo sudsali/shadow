@@ -14,7 +14,7 @@ on:
     inputs:
       shadow_ref:
         type: string
-        default: v1.8
+        default: v1.9
         description: "git ref of sudsali/shadow to clone (tag, branch, or sha)"
       pr_number:
         type: string

@@ -104,7 +104,7 @@ permissions:
   issues: write
 jobs:
   shadow:
-    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.8
+    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.9
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}
@@ -280,7 +280,7 @@ Shadow is BYO-AWS today. The bot calls Bedrock from **your** account, you get th
 
 ### Recommended: one-click CloudFormation Launch Stack
 
-[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/sudsali/shadow/v1.8/infrastructure/shadow-iam-stack.yaml&stackName=shadow-bot)
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/sudsali/shadow/v1.9/infrastructure/shadow-iam-stack.yaml&stackName=shadow-bot)
 
 The button opens AWS Console with [`infrastructure/shadow-iam-stack.yaml`](infrastructure/shadow-iam-stack.yaml) pre-loaded. Fill in:
 
@@ -315,7 +315,7 @@ python -m shadow.doctor --role-arn $ARN --region $REGION
 
 > **Deploy in your Bedrock region.** The button opens CloudFormation in `us-east-1`; if your `BedrockRegion`/`aws_region` is elsewhere, switch the console region before creating the stack. The optional anomaly alarms are regional and only see metrics emitted in their own region, so a region mismatch leaves them permanently green.
 
-> **Heads-up on the template URL:** the Launch Stack button resolves `…/sudsali/shadow/v1.8/infrastructure/shadow-iam-stack.yaml` at click time — pinned to the `v1.8` release tag, so it's stable as long as you use this button. If you bump to a newer Shadow release, grab that release's Launch Stack URL. For fully reproducible IAM provisioning, download the YAML at a specific SHA and upload it manually.
+> **Heads-up on the template URL:** the Launch Stack button resolves `…/sudsali/shadow/v1.9/infrastructure/shadow-iam-stack.yaml` at click time — pinned to the `v1.9` release tag, so it's stable as long as you use this button. If you bump to a newer Shadow release, grab that release's Launch Stack URL. For fully reproducible IAM provisioning, download the YAML at a specific SHA and upload it manually.
 
 ### Manual setup (alternative)
 

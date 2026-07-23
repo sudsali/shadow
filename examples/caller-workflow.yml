@@ -29,7 +29,7 @@ on:
         type: boolean
         default: true
       shadow_ref:
-        default: v1.8
+        default: v1.9
         description: "Shadow ref to pin to: a v1.x release tag, or a 40-char commit SHA"
 
 permissions:
@@ -43,13 +43,13 @@ permissions:
 # disable both jobs without deleting this workflow file.
 jobs:
   shadow:
-    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.8
+    uses: sudsali/shadow/.github/workflows/shadow-review.yml@v1.9
     with:
       pr_number: ${{ inputs.pr_number }}
       dry_run: ${{ inputs.dry_run && 'true' || 'false' }}
       # Keep this in sync with the `uses:` pin above — GitHub forbids
       # expressions in `uses:`, so the two can't share a variable.
-      shadow_ref: ${{ inputs.shadow_ref || 'v1.8' }}
+      shadow_ref: ${{ inputs.shadow_ref || 'v1.9' }}
       # Cost levers — uncomment to override the defaults (10/8). Lower
       # numbers cap Bedrock spend at the cost of review depth.
       # investigator_max_tool_calls: "5"
