@@ -392,7 +392,13 @@ class GitHubClient:
             line = ic.get("line")
             path = ic.get("file", "")
             if line and path in valid_lines and line in valid_lines[path]:
-                valid_comments.append({"path": path, "body": ic["comment"], "line": line, "side": "RIGHT"})
+                entry = {"path": path, "body": ic["comment"], "line": line, "side": "RIGHT"}
+                start = ic.get("start_line")
+                # GitHub 422s the whole review if a range leaves its hunk; contiguous valid lines stay in one hunk.
+                if isinstance(start, int) and not isinstance(start, bool) and 0 < start < line \
+                        and all(n in valid_lines[path] for n in range(start, line + 1)):
+                    entry.update(start_line=start, start_side="RIGHT")
+                valid_comments.append(entry)
             else:
                 invalid_comments.append(ic)
 

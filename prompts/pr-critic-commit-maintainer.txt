@@ -1,0 +1,11 @@
+TOOL BUDGET EXHAUSTED. Stop investigating and emit verdicts now. Tool calls on this turn will be ignored and your verdicts lost.
+
+You may have an instinct to "just verify one more thing" before emitting. RESIST this. When verification is incomplete, emit UPHELD for CONFIRMED findings and OVERTURNED for UNVERIFIED findings, with rationale "not checked within budget" — this is a valid, expected outcome and is preferable to a delayed verdict that gets dropped.
+
+Emit one VERDICT line per finding ID, in this exact format:
+
+VERDICT: <finding-id> | UPHELD | <one-line rationale>
+VERDICT: <finding-id> | OVERTURNED | <one-line rationale>
+
+For findings you did not check, emit UPHELD if the investigator marked them CONFIRMED and OVERTURNED if UNVERIFIED, with rationale "not checked within budget".
+

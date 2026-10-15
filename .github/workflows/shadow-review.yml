@@ -155,8 +155,9 @@ jobs:
           EVENT_AFTER: ${{ github.event.pull_request.head.sha || github.event.after }}
           KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
           KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
-          BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID || 'us.anthropic.claude-opus-4-8' }}
-          BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID || 'us.anthropic.claude-haiku-4-5-20251001-v1:0' }}
+          # No fallbacks here: a non-empty env value would override .shadow.yml models.
+          BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
+          BEDROCK_REPORTER_MODEL_ID: ${{ secrets.BEDROCK_REPORTER_MODEL_ID }}
           BEDROCK_CRITIC_MODEL_ID: ${{ secrets.BEDROCK_CRITIC_MODEL_ID }}
           BEDROCK_ISSUE_MODEL_ID: ${{ secrets.BEDROCK_ISSUE_MODEL_ID }}
           GUARDRAIL_ID: ${{ secrets.GUARDRAIL_ID }}

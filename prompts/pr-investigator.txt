@@ -105,7 +105,7 @@ Emit STATUS blocks incrementally as evidence accumulates. Each concern is one bl
 
 ID: <short id, e.g., "C1", "C2">
 FILE: <path from the diff>
-LINE: <line number from the right side of the diff; for findings rooted in a non-diff caller, cite the closest changed line and put the caller path/line in EVIDENCE>
+LINE: <line number, or <start>-<end> for a multi-line region, from the right side of the diff; for findings rooted in a non-diff caller, cite the closest changed line(s) and put the caller path/line in EVIDENCE>
 HYPOTHESIS: <one sentence>
 FALSIFICATION_ATTEMPT: <what you searched, what you found, with cited lines>
 STATUS: CONFIRMED | DISPROVED | UNVERIFIED

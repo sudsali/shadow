@@ -28,6 +28,8 @@ When a PR is opened or pushed, Shadow reads the diff, investigates with `read_fi
 
 Each comment carries a collapsed `<details>` block — the **Refutation Trail** — showing the Investigator's hypothesis and the Critic's failed counter-argument. You can read why each finding survived without leaving the PR.
 
+Inline comments cover the full line range a finding is about, and overlapping findings on the same lines are merged into the most severe one.
+
 If the Critic overturns every finding, the bot still posts a single `<!-- {bot.name}:clean -->`-marked confirmation so you can see the review ran. (Default `<!-- shadow:clean -->`; renamed if you set `bot.name` in `.shadow.yml`.)
 
 ### 2. Issue triage
@@ -188,11 +190,18 @@ bot:
   escalate_label: needs-human       # must already exist in your repo's Labels
   max_replies: 2                    # 0..100; cap on followup replies before next user comment ESCALATEs
   max_runs_per_hour: 20             # 0..100; per-(repo, item) rate limit; 0 disables
+  escalate_bug_reports: true        # an issue answer labeled `bug` is posted as an escalation so a maintainer is notified
   allowed_labels:                   # labels issue-triage may apply; defaults to bug/enhancement/question/documentation/help-wanted. Add repo-specific labels here (they must exist in your repo's Labels).
     - bug
     - enhancement
     - question
     - documentation
+
+review:
+  profile: precise                  # precise (default) | maintainer. maintainer runs one Investigator loop per
+                                    # changed source file (tests and docs skipped), keeps a finding unless the
+                                    # Critic finds code that disproves it, and posts only BUG and EDGE_CASE
+                                    # findings plus DESIGN at confidence 8 or higher.
 
 # Override per-stage models if you want a different cost/quality trade-off.
 # Env vars BEDROCK_MODEL_ID / BEDROCK_REPORTER_MODEL_ID / BEDROCK_CRITIC_MODEL_ID /
@@ -215,12 +224,15 @@ models:
 | `BOT_INVESTIGATOR_MAX_TURNS` | `15` | Hard cap on Investigator agent loop turns. |
 | `BOT_CRITIC_MAX_TURNS` | `10` | Hard cap on Critic agent loop turns. |
 | `BOT_AGENT_MAX_DIFF_CHARS` | `200000` | Per-agent diff truncation limit. |
-| `BOT_PIPELINE_WALL_CLOCK_S` | `480` | Total agent-pipeline wall-clock budget. |
+| `BOT_PIPELINE_WALL_CLOCK_S` | `480` (`780` under the maintainer profile) | Total agent-pipeline wall-clock budget. Per-file loops stop starting when less than 240s remains, so the Critic and Reporter still run. |
+| `BOT_REVIEW_PROFILE` | `precise` | `precise` or `maintainer` (also `.shadow.yml` `review.profile`). The maintainer profile swaps the Critic, Critic commit and Reporter prompts. With bring-your-own prompts it reads `<name>-maintainer-prompt` secrets for those stages (for example `my-bot/pr-critic-maintainer-prompt`) and otherwise uses the bundled maintainer prompts, never your base secrets for those stages. |
+| `BOT_PER_FILE_MAX_FILES` | `12` | Maintainer profile: the most files that get their own Investigator loop (the largest diffs first). |
 | `BOT_REPORTER_MIN_REMAINING_S` | `60` | Reporter is pre-empted if less than this remains. |
 | `BOT_MAX_DIFF_FOR_REVIEW_CHARS` | `100000` | Pre-flight diff cap. Diff above this → ESCALATE before any Bedrock call. |
 | `BOT_MAX_FILES_FOR_REVIEW` | `50` | Pre-flight file-count cap. Same shape as above. |
 | `BOT_MAX_RUNS_PER_HOUR` | `20` | Per-(repo, item) hourly run cap. `0` disables. Capped at `100`; values above clamp with a warning. Negative values fall back to default. Hit → ESCALATE with a `<bot.name>:rate-limited` label. |
 | `BOT_ALLOWED_LABELS` | `bug,enhancement,question,documentation,help-wanted` | Comma-separated allowlist of labels issue-triage may apply (also settable as a list under `.shadow.yml` `bot.allowed_labels`). Model-proposed labels outside the set are dropped. Empty/garbage falls back to the default. |
+| `BOT_ESCALATE_BUG_REPORTS` | `true` | When an issue answer carries the `bug` label, post it as an escalation (escalate label + Slack) instead of a plain reply, so a reported bug always reaches a maintainer. Also `.shadow.yml` `bot.escalate_bug_reports`. |
 | `BOT_MAX_REPLIES` | `2` | Followup-reply cap per (issue, PR). Capped at `100`; negative falls back to default. |
 | `BOT_GITHUB_ACTOR` | `github-actions[bot]` | GitHub login Shadow's comments appear under. **Set this to a unique value** if your repo has other workflows that also post as `github-actions[bot]` (e.g., PR-overlap detectors, claim-checkers). Otherwise Shadow's `already_commented` dedup matches their comments and silently SKIPs every PR. |
 | `BOT_REQUIRE_GUARDRAIL` | `true` | Production runs (`DRY_RUN=false`) refuse to start when `GUARDRAIL_ID` is unset — Shadow won't run without prompt-injection defense. On the reusable workflow, drive this via the `require_guardrail` **input** (`with: require_guardrail: 'false'`) — accepts `0`/`false`/`no`/`off`. `DRY_RUN=true` bypasses the gate regardless. |
