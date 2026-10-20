@@ -1,7 +1,8 @@
 """_build_provenance_from_env feeds the audit-trail model attribution on the
-early-exit SKIP/ESCALATE paths (no Config in scope). It must mirror Config's
-env>default resolution — critically, reporter AND issue default to Haiku, not
-to BEDROCK_MODEL_ID — or those artifacts misattribute which model ran.
+artifacts written without Config (early exits and issue answers). It must mirror
+Config's env > .shadow.yml > default resolution — critically, reporter AND issue
+default to Haiku, not to BEDROCK_MODEL_ID — or those artifacts misattribute which
+model ran.
 """
 import pytest
 
@@ -14,9 +15,10 @@ _MODEL_ENVS = ("BEDROCK_MODEL_ID", "BEDROCK_REPORTER_MODEL_ID",
 
 
 @pytest.fixture(autouse=True)
-def _clear(monkeypatch):
+def _clear(monkeypatch, tmp_path):
     for v in _MODEL_ENVS:
         monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("SHADOW_REPO_ROOT", str(tmp_path))
 
 
 def _models():
@@ -72,3 +74,15 @@ def test_issue_env_wins_over_reporter(monkeypatch):
     mo = _models()
     assert mo["reporter"] == _HAIKU
     assert mo["issue"] == "us.anthropic.claude-sonnet-4-6"
+
+
+def test_shadow_yml_models_resolve_exactly_like_config(monkeypatch, tmp_path):
+    (tmp_path / ".shadow.yml").write_text(
+        "models:\n  investigator: us.anthropic.claude-sonnet-4-6`\n  issue: us.anthropic.claude-sonnet-4-6\n")
+    for k, v in {"GITHUB_TOKEN": "x", "EVENT_TYPE": "issues", "ISSUE_NUMBER": "1", "GITHUB_REPOSITORY": "o/r",
+                 "BOT_REQUIRE_GUARDRAIL": "false", "BEDROCK_CRITIC_MODEL_ID": "us.anthropic.claude-opus-4-7"}.items():
+        monkeypatch.setenv(k, v)
+    from shadow.config import Config
+    mo = _models()
+    assert mo["investigator"] == "us.anthropic.claude-sonnet-4-6" and mo["reporter"] == _HAIKU
+    assert mo == m._build_provenance(Config())["models"]

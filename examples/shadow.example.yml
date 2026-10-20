@@ -15,6 +15,11 @@ bot:
   max_replies: 2                     # per-(issue, PR) cap on bot follow-up replies; 0..100, negative falls back to default
   max_runs_per_hour: 20              # per-(repo, item) hourly cap on Shadow workflow runs; 0 disables, 0..100, negative falls back to default
 
+# Review profile: precise (default) or maintainer. maintainer reviews each changed source file
+# separately, keeps findings unless the Critic disproves them, and posts defects only.
+# review:
+#   profile: maintainer
+
 # Override per-stage models if you want different cost/quality trade-offs.
 # Defaults below; specify only what you want to change.
 # Env vars (BEDROCK_MODEL_ID, BEDROCK_REPORTER_MODEL_ID, BEDROCK_CRITIC_MODEL_ID)

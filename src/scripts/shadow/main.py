@@ -17,7 +17,8 @@ import sys
 import time
 import uuid
 
-from .config import Config, _DEFAULT_MODEL, _DEFAULT_REPORTER_MODEL
+from .config import Config, _DEFAULT_MODEL, _DEFAULT_REPORTER_MODEL, _scrub_model_id
+from . import shadow_config
 from .bedrock_client import BedrockClient
 from .github_client import GitHubClient
 from .knowledge_base import KnowledgeBase
@@ -144,6 +145,7 @@ def analyze():
     # not leak into this run's artifact security_events block.
     sanitizer_mod.reset_security_events()
     cfg = Config()
+    prompts.set_profile(cfg.review_profile)
     gh = GitHubClient(cfg)
     bedrock = BedrockClient(cfg)
     kb = KnowledgeBase(cfg)
@@ -396,11 +398,16 @@ def analyze():
             # first-pass prompt).
             prompt_id = prompts.prompt_version(respond_tmpl)
 
+    action, labels, extra = parsed["action"], parsed.get("labels", []), {}
+    # A reported bug needs a maintainer even when the answer is right; ESCALATE still posts the reply.
+    if action == "RESPOND" and not is_followup and cfg.escalate_bug_reports \
+            and isinstance(labels, list) and "bug" in labels:
+        action, extra = "ESCALATE", {"reason": "bug_reported"}
     _write_artifact({
-        "action": parsed["action"], "labels": parsed.get("labels", []),
+        "action": action, "labels": labels,
         "response": parsed.get("response", ""),
         "inline_comments": parsed.get("inline_comments", []),
-        "title": title, "html_url": html_url, "number": number,
+        "title": title, "html_url": html_url, "number": number, **extra,
         # surface_model_id names the model that actually ran: the issue/followup
         # path invokes cfg.issue_model_id, so the user-facing footer names that
         # model (not the Investigator's Opus).
@@ -1161,7 +1168,7 @@ def _has_confirmed_findings(notes):
     return _STATUS_CONFIRMED_RE.search(notes) is not None
 
 
-def _filter_and_format_inline_comments(comments, *, incremental_files, is_pr_update):
+def _filter_and_format_inline_comments(comments, *, incremental_files, is_pr_update, profile="precise"):
     """Filter and decorate inline comments before they reach GitHub.
 
     Drops entries without a positive line number; restricts to files in the
@@ -1200,7 +1207,7 @@ def _filter_and_format_inline_comments(comments, *, incremental_files, is_pr_upd
         raw_comment = c.get("comment", "")
         prefix = f"**{severity}**: " if severity else ""
         suffix = "\n\n> " + evidence.replace("\n", "\n> ") if evidence else ""
-        trail = _format_refutation_trail(hypothesis, falsification)
+        trail = _format_refutation_trail(hypothesis, falsification, keep_by_default=profile == "maintainer")
         merged = prefix + raw_comment + suffix + trail
         # Sanitize the MERGED body so the artifact carries the same scrub
         # state act() will apply when posting. Otherwise hypothesis or
@@ -1235,7 +1242,7 @@ def _scrub_for_details_block(val):
     return re.sub(r"</\s*details\s*>", "&lt;/details&gt;", val.strip(), flags=re.IGNORECASE)
 
 
-def _format_refutation_trail(hypothesis, falsification):
+def _format_refutation_trail(hypothesis, falsification, keep_by_default=False):
     """Format Investigator hypothesis + Critic falsification as a collapsed
     details block. Returns '' when both are blank so callers can concat
     unconditionally."""
@@ -1243,14 +1250,17 @@ def _format_refutation_trail(hypothesis, falsification):
     f = _scrub_for_details_block(falsification)
     if not h and not f:
         return ""
-    lines = ["", "<details>", "<summary>Refutation trail (why this survived the Critic's disprove pass)</summary>", ""]
+    summary = ("Refutation trail (the Critic found no code that disproves this)" if keep_by_default
+               else "Refutation trail (why this survived the Critic's disprove pass)")
+    lines = ["", "<details>", f"<summary>{summary}</summary>", ""]
     if h:
         lines.append(f"**Hypothesis (Investigator):** {h}")
         lines.append("")
     if f:
         lines.append(f"**Disprove attempt (Critic):** {f}")
         lines.append("")
-    lines.append("_The Critic's default verdict is OVERTURNED. UPHELD findings are those it tried — and failed — to refute._")
+    lines.append("_The Critic keeps a finding unless it finds code that disproves it._" if keep_by_default
+                 else "_The Critic's default verdict is OVERTURNED. UPHELD findings are those it tried — and failed — to refute._")
     lines.append("</details>")
     return "\n".join(lines)
 
@@ -1330,7 +1340,8 @@ def _run_agent_pipeline(*, cfg, gh, bedrock, number, title, body, html_url, item
     # agent_loop's between-turn check), so the same pipeline_deadline.
     tool_runner = ToolRunner(cfg, gh.repo_root, pipeline_deadline=pipeline_deadline)
 
-    inv_result = agent_loop.run(
+    inv_result = _run_investigator(
+        cfg, investigator_diff,
         bedrock_client=bedrock, agent_name="investigator",
         system_prompt=investigator_system,
         user_prompt=investigator_trusted,
@@ -1439,6 +1450,7 @@ def _run_agent_pipeline(*, cfg, gh, bedrock, number, title, body, html_url, item
         rep_inline_comments,
         incremental_files=incremental_files,
         is_pr_update=is_pr_update,
+        profile=cfg.review_profile,
     )
     response = _build_clean_response(gh, head_sha, rep_inline_comments, cfg.bot_name)
 
@@ -1555,6 +1567,101 @@ def _initial_metrics(inv_result, model_id):
     }
 
 
+# Mirrors common test/docs layouts so per-file loops spend only on product code.
+_NON_PRODUCT_PATH = re.compile(
+    r"(^|/)(tests?|__tests__|testing|spec|docs?)/|(^|/)test_[^/]*$|_test\.[^/]+$|\.(test|spec)\.[^/]+$|\.(md|rst|adoc)$",
+    re.IGNORECASE,
+)
+# Stop starting per-file loops when less than this is left, so the Critic and Reporter still run.
+_PER_FILE_RESERVE_SECONDS = 240
+
+
+def _diff_file_chunks(diff_text, test_dir="", max_files=12):
+    """(path, chunk) per product file in a unified diff; the largest max_files when there are more."""
+    chunks, current = [], []
+    for line in (diff_text or "").splitlines(keepends=True):
+        if line.startswith("diff --git ") and current:
+            chunks.append("".join(current))
+            current = []
+        current.append(line)
+    if current:
+        chunks.append("".join(current))
+    test_prefix = test_dir.strip("/") + "/" if test_dir and test_dir.strip("/") else None
+    out = []
+    for chunk in chunks:
+        if "\ndeleted file mode" in chunk[:400] or "\nBinary files " in chunk:
+            continue
+        path = chunk.split("\n", 1)[0].rsplit(" b/", 1)[-1]
+        if _NON_PRODUCT_PATH.search(path) or (test_prefix and path.startswith(test_prefix)):
+            continue
+        out.append((path, chunk))
+    if len(out) > max_files:
+        out = sorted(out, key=lambda item: -len(item[1]))[:max_files]
+    return out
+
+
+def _run_investigator(cfg, diff, **run_kwargs):
+    """One Investigator loop, or under the maintainer profile one loop per product file, merged
+    into a single result so the Critic sees every file's findings."""
+    chunks = _diff_file_chunks(diff, cfg.codebase_test_dir, cfg.per_file_max_files) \
+        if cfg.review_profile == "maintainer" else []
+    if len(chunks) <= 1:
+        return agent_loop.run(**run_kwargs)
+    paths = [path for path, _ in chunks]
+    deadline = run_kwargs.get("pipeline_deadline")
+    merged, texts = agent_loop.AgentResult(), []
+    for n, (path, chunk) in enumerate(chunks, 1):
+        if deadline is not None and deadline - time.monotonic() < _PER_FILE_RESERVE_SECONDS:
+            logger.warning("Per-file investigation stopped after %d/%d files: pipeline deadline", n - 1, len(chunks))
+            break
+        others = ", ".join(p for p in paths if p != path)
+        result = agent_loop.run(**dict(run_kwargs, user_prompt=(
+            f"Investigate only {path}. The PR also changes: {others}.\n<diff>\n{chunk}\n</diff>")))
+        if result.text:
+            texts.append(f"## Scope: {path}\n" + re.sub(r"(\bID\s*:\s*\**\s*)(\w+)", rf"\1F{n}-\2", result.text))
+        for attr in ("turns", "tool_calls", "tool_output_chars", "input_tokens", "output_tokens",
+                     "cache_read_tokens", "cache_write_tokens"):
+            setattr(merged, attr, getattr(merged, attr) + getattr(result, attr))
+        merged.max_turns_reached |= result.max_turns_reached
+        merged.commit_phase_ran |= result.commit_phase_ran
+        merged.error = merged.error or result.error
+        merged.tool_trace += result.tool_trace
+    merged.text = "\n\n".join(texts)
+    return merged
+
+
+_BLOCK_FIELD_RE = re.compile(r"^\**(ID|FILE|LINE|CONFIDENCE)\**\s*:\s*\**\s*`?([^`\s*]+)`?", re.M)
+
+
+def _apply_severity_floor(comments, investigator_text):
+    """Maintainer profile: post BUG and EDGE_CASE, DESIGN only at Investigator CONFIDENCE >= 8,
+    never MISSING_TEST or NIT."""
+    confidence, current = {}, {}
+
+    def flush():
+        line = re.match(r"(\d+)(?:-(\d+))?", current.get("LINE", ""))
+        conf = re.match(r"\d+", current.get("CONFIDENCE", ""))
+        if current.get("FILE") and line and conf:
+            for n in {int(line.group(1)), int(line.group(2) or line.group(1))}:
+                confidence[(_canonicalize_path(current["FILE"]), n)] = int(conf.group(0))
+
+    for key, value in _BLOCK_FIELD_RE.findall(investigator_text or ""):
+        if key == "ID":
+            flush()
+            current = {}
+        current.setdefault(key, value)
+    flush()
+    kept = []
+    for c in comments:
+        severity = str(c.get("severity") or "").upper()
+        path = _canonicalize_path(c.get("file", ""))
+        conf = confidence.get((path, c.get("line"))) or confidence.get((path, c.get("start_line")))
+        if severity in ("NIT", "MISSING_TEST") or (severity == "DESIGN" and (conf or 0) < 8):
+            continue
+        kept.append(c)
+    return kept
+
+
 def _run_critic_and_reporter(*, cfg, bedrock, tool_runner, critic_system, critic_caps,
                               reporter_system, diff, title, body, investigator_text,
                               investigator_max_turns_reached=False,
@@ -1653,6 +1760,8 @@ def _run_critic_and_reporter(*, cfg, bedrock, tool_runner, critic_system, critic
     if raw is None:
         return crit_result, PipelineEvent.REPORTER_FAILED, [], reporter_metrics
     inline_comments, parse_ok = _parse_reporter_output(raw)
+    if parse_ok:
+        inline_comments = _postprocess_findings(cfg, inline_comments, investigator_text)
     if not parse_ok:
         reporter_metrics["parse_failed"] = True
         reporter_metrics["skip_reason"] = "reporter_output_malformed"
@@ -1891,6 +2000,56 @@ def _critic_overturn_rate(critic_text):
     return round(overturned / total, 3)
 
 
+_LINE_RANGE_RE = re.compile(r"^\**(FILE|LINE)\**\s*:\s*\**\s*`?([^`\s*]+)`?", re.M)
+_SEVERITY_RANK = {"BUG": 0, "EDGE_CASE": 1, "DESIGN": 2, "MISSING_TEST": 3, "NIT": 4}
+
+
+def _attach_line_ranges(comments, investigator_text):
+    """Restore the Investigator's LINE ranges, which the Reporter flattens to one line."""
+    ranges, current_file = {}, None
+    for key, value in _LINE_RANGE_RE.findall(investigator_text or ""):
+        if key == "FILE":
+            current_file = _canonicalize_path(value)
+            continue
+        match = re.fullmatch(r"(\d+)-(\d+)", value)
+        if current_file and match and int(match.group(1)) < int(match.group(2)):
+            start, end = int(match.group(1)), int(match.group(2))
+            ranges.setdefault((current_file, start), (start, end))
+            ranges.setdefault((current_file, end), (start, end))
+    out = []
+    for c in comments:
+        span = ranges.get((_canonicalize_path(c.get("file", "")), c.get("line")))
+        if span and "start_line" not in c:
+            c = dict(c, start_line=span[0], line=span[1])
+        out.append(c)
+    return out
+
+
+def _postprocess_findings(cfg, comments, investigator_text):
+    comments = _dedupe_findings(_attach_line_ranges(comments, investigator_text))
+    if cfg.review_profile == "maintainer":
+        comments = _apply_severity_floor(comments, investigator_text)
+    return comments
+
+
+def _dedupe_findings(comments, slack=2):
+    """Keep one finding per overlapping line span in a file, preferring the more severe one."""
+    def span(c):
+        end = c.get("line") or 0
+        return (c.get("start_line") or end), end
+
+    kept = []
+    ordered = sorted(enumerate(comments), key=lambda p: (_SEVERITY_RANK.get(str(p[1].get("severity", "")).upper(), 9), p[0]))
+    for index, c in ordered:
+        lo, hi = span(c)
+        path = _canonicalize_path(c.get("file", ""))
+        if any(_canonicalize_path(k.get("file", "")) == path and lo - slack <= span(k)[1] and span(k)[0] <= hi + slack
+               for _, k in kept):
+            continue
+        kept.append((index, c))
+    return [c for _, c in sorted(kept, key=lambda p: p[0])]
+
+
 def _parse_reporter_output(raw):
     """Parse the Reporter's JSON output. Returns (inline_comments, parse_ok).
 
@@ -1922,7 +2081,8 @@ def _parse_reporter_output(raw):
                 if isinstance(line_val, int) and not isinstance(line_val, bool)
                 else 0
             )
-            out.append({
+            start_val = a.get("start_line")
+            item = {
                 "file": _str_field(a.get("file")),
                 "line": line,
                 "severity": _str_field(finding.get("severity")),
@@ -1930,7 +2090,10 @@ def _parse_reporter_output(raw):
                 "evidence": _str_field(finding.get("evidence")),
                 "hypothesis": _str_field(a.get("hypothesis")),
                 "falsification_attempt": _str_field(a.get("falsification_attempt")),
-            })
+            }
+            if isinstance(start_val, int) and not isinstance(start_val, bool) and 0 < start_val < line:
+                item["start_line"] = start_val
+            out.append(item)
         return out, True
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
         logger.error("Reporter output parse failed (%s): %s",
@@ -2006,21 +2169,23 @@ def _build_provenance(cfg):
 
 
 def _build_provenance_from_env():
-    """Provenance for SKIP/ESCALATE paths with no Config in scope. Reporter AND
-    issue must default to Haiku (_DEFAULT_REPORTER_MODEL), NOT BEDROCK_MODEL_ID,
-    or setting only BEDROCK_MODEL_ID=Opus misattributes them to Opus while
-    runtime ran Haiku. Mirrors Config's defaults from the same constants so a
-    default bump can't drift this path."""
-    investigator = (os.getenv("BEDROCK_MODEL_ID") or "").strip() or _DEFAULT_MODEL
-    reporter = (os.getenv("BEDROCK_REPORTER_MODEL_ID") or "").strip() or _DEFAULT_REPORTER_MODEL
+    """Provenance for artifacts written without Config. Resolves models exactly as Config does
+    (env > .shadow.yml > default; reporter and issue default to Haiku) so the audit trail names
+    the model that ran."""
+    yml = shadow_config.load(os.getenv("SHADOW_REPO_ROOT", "."))
+
+    def resolve(var, stage, default):
+        return _scrub_model_id(shadow_config.env_or(var, shadow_config.get(yml, "models", stage), default), default)
+    investigator = resolve("BEDROCK_MODEL_ID", "investigator", _DEFAULT_MODEL)
+    reporter = resolve("BEDROCK_REPORTER_MODEL_ID", "reporter", _DEFAULT_REPORTER_MODEL)
     return {
         "schema_version": 1,
         "shadow_ref": os.getenv("SHADOW_BOT_REF", "").strip() or "unknown",
         "models": {
             "investigator": investigator,
-            "critic": (os.getenv("BEDROCK_CRITIC_MODEL_ID") or "").strip() or investigator,
+            "critic": resolve("BEDROCK_CRITIC_MODEL_ID", "critic", investigator),
             "reporter": reporter,
-            "issue": (os.getenv("BEDROCK_ISSUE_MODEL_ID") or "").strip() or reporter,
+            "issue": resolve("BEDROCK_ISSUE_MODEL_ID", "issue", reporter),
         },
         "prompts": prompts.compute_prompt_provenance(),
     }

@@ -18,6 +18,30 @@ logger = logging.getLogger("shadow")
 _PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
 
 
+_profile = "precise"
+# Bundled defaults swapped by the `maintainer` profile; env and Secrets Manager overrides still win.
+_PROFILE_FILES = {"maintainer": {
+    "pr-critic.txt": "pr-critic-maintainer.txt",
+    "pr-critic-commit.txt": "pr-critic-commit-maintainer.txt",
+    "pr-reporter.txt": "pr-reporter-maintainer.txt",
+}}
+
+
+def set_profile(profile):
+    global _profile
+    _profile = profile
+
+
+def _profile_filename(filename):
+    return _PROFILE_FILES.get(_profile, {}).get(filename, filename)
+
+
+def _profile_secret_name(secret_name):
+    """`<prefix>/pr-critic-prompt` -> `<prefix>/pr-critic-maintainer-prompt` under the maintainer profile."""
+    stem = secret_name[:-len("-prompt")] if secret_name.endswith("-prompt") else secret_name
+    return f"{stem}-{_profile}-prompt"
+
+
 def _read_from_disk(filename):
     p = _PROMPTS_DIR / filename
     if not p.exists():
@@ -130,6 +154,13 @@ def _resolve_prompt(env_var, filename, sm_fallback_to_disk=False):
     if val.strip():
         return val, f"env:{env_var}"
     sm_name = os.getenv(f"SM_{env_var}", "").strip()
+    if sm_name and _profile_filename(filename) != filename:
+        # A profile changes the prompt's contract, so the adopter's base secret must not stand in for it.
+        sm_name = _profile_secret_name(sm_name)
+        text = _read_from_sm(sm_name)
+        if text.strip():
+            return text, f"sm:{sm_name}"
+        sm_name = ""
     if sm_name:
         text = _read_from_sm(sm_name)
         if text.strip():
@@ -140,6 +171,7 @@ def _resolve_prompt(env_var, filename, sm_fallback_to_disk=False):
         if not sm_fallback_to_disk:
             return "", f"sm:{sm_name}"
         # fall through to disk
+    filename = _profile_filename(filename)
     disk = _read_from_disk(filename)
     return (disk if disk.strip() else ""), f"file:prompts/{filename}"
 

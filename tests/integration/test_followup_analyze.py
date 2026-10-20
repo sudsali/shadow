@@ -199,7 +199,7 @@ def test_issue_respond_second_pass_reattributes_prompt_id(_run, monkeypatch):
     monkeypatch.setattr(prompts_mod, "get_issue_prompt", lambda: "CLASSIFY PROMPT")
     monkeypatch.setattr(prompts_mod, "get_issue_respond_prompt", lambda: "RESPOND PROMPT")
     first = json.dumps({"action": "RESPOND", "read_files": ["src/x.py"], "response": "draft"})
-    second = json.dumps({"action": "RESPOND", "response": "cited answer", "labels": ["bug"]})
+    second = json.dumps({"action": "RESPOND", "response": "cited answer", "labels": ["question"]})
     art = _run(_item(), [_comment("human", "why does x fail?")],
                event_type="issues", files={"src/x.py": "def x(): ..."},
                bedrock_responses=[first, second])
@@ -443,3 +443,25 @@ def test_act_corrupted_head_sha_degrades_safely(monkeypatch, tmp_path, bad_head_
 
     assert len(gh.reviews) == 1
     assert gh.reviews[0]["commit_id"] == ""   # corrupted → omitted, safe fallback
+
+
+def test_answered_bug_report_still_escalates_with_the_answer(_run, monkeypatch):
+    monkeypatch.setattr(prompts_mod, "get_issue_prompt", lambda: "CLASSIFY PROMPT")
+    answer = json.dumps({"action": "RESPOND", "response": "the cause is X", "labels": ["bug"]})
+    art = _run(_item(), [], event_type="issues", bedrock_responses=[answer])
+    assert (art["action"], art["reason"], art["response"], art["labels"]) == ("ESCALATE", "bug_reported", "the cause is X", ["bug"])
+
+
+def test_answered_question_is_not_escalated(_run, monkeypatch):
+    monkeypatch.setattr(prompts_mod, "get_issue_prompt", lambda: "CLASSIFY PROMPT")
+    answer = json.dumps({"action": "RESPOND", "response": "use X", "labels": ["question"]})
+    art = _run(_item(), [], event_type="issues", bedrock_responses=[answer])
+    assert art["action"] == "RESPOND" and "reason" not in art
+
+
+def test_bug_escalation_can_be_turned_off(_run, monkeypatch):
+    monkeypatch.setattr(prompts_mod, "get_issue_prompt", lambda: "CLASSIFY PROMPT")
+    monkeypatch.setenv("BOT_ESCALATE_BUG_REPORTS", "false")
+    answer = json.dumps({"action": "RESPOND", "response": "the cause is X", "labels": ["bug"]})
+    art = _run(_item(), [], event_type="issues", bedrock_responses=[answer])
+    assert art["action"] == "RESPOND"

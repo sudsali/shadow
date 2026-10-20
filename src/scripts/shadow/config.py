@@ -227,7 +227,22 @@ class Config:
             )
             agent_max_diff = 200_000
         self.agent_max_diff_chars = agent_max_diff
-        self.pipeline_wall_clock_seconds = _int_env("BOT_PIPELINE_WALL_CLOCK_S", 480)
+        # `maintainer` adds per-file investigation, keep-by-default filtering and a severity floor.
+        profile = str(shadow_config.env_or(
+            "BOT_REVIEW_PROFILE", shadow_config.get(yml, "review", "profile"), "precise",
+        )).strip().lower()
+        if profile not in ("precise", "maintainer"):
+            logger.warning("Unknown review profile %r; using 'precise'", profile)
+            profile = "precise"
+        self.review_profile = profile
+        self.escalate_bug_reports = str(shadow_config.env_or(
+            "BOT_ESCALATE_BUG_REPORTS", shadow_config.get(yml, "bot", "escalate_bug_reports"), "true",
+        )).strip().lower() not in ("0", "false", "no", "off")
+        self.per_file_max_files = _int_env("BOT_PER_FILE_MAX_FILES", 12) or 12
+        # Per-file loops run sequentially; 780s keeps the analyze job under its 15-minute timeout.
+        self.pipeline_wall_clock_seconds = _int_env(
+            "BOT_PIPELINE_WALL_CLOCK_S", 780 if profile == "maintainer" else 480,
+        )
         # Reporter latency on slow Bedrock days runs 20-45s.
         self.reporter_min_remaining_seconds = _int_env("BOT_REPORTER_MIN_REMAINING_S", 60)
 

@@ -24,7 +24,8 @@ You also have <diff> in the system prompt for reference, but do not introduce fi
 <output_schema>
 Emit JSON conforming to the response schema. Each item in the analysis array has:
 - file (string)
-- line (integer, > 0)
+- line (integer, > 0): the last line of the code the finding is about
+- start_line (integer, optional): the first line when the finding spans several lines; must be less than `line`. Take the range from the investigator's LINE or EVIDENCE citations; omit it for single-line findings.
 - hypothesis (string) — copy from investigator
 - falsification_attempt (string) — copy from investigator
 - disproved (boolean, REQUIRED): always emit literal `false`. The post-filter drops items where disproved is true, so the field MUST be present and false on every emitted item.
